@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.log
+bot.pid
+supervisor.pid
+supervisor_out.log
+bot.log
+.DS_Store

@@ -1,0 +1,239 @@
+"""
+config.py — load and validate all environment variables.
+All other modules import from here; no other module calls load_dotenv().
+"""
+from __future__ import annotations
+
+import os
+import sys
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _get(key: str, default: str | None = None) -> str:
+    val = os.getenv(key, default)
+    if val is None:
+        sys.exit(f"[config] Required env var '{key}' is not set. See .env.example.")
+    return val
+
+
+def _float(key: str, default: float) -> float:
+    raw = os.getenv(key, str(default))
+    try:
+        return float(raw)
+    except ValueError:
+        sys.exit(f"[config] '{key}' must be a float, got: {raw!r}")
+
+
+def _int(key: str, default: int) -> int:
+    raw = os.getenv(key, str(default))
+    try:
+        return int(raw)
+    except ValueError:
+        sys.exit(f"[config] '{key}' must be an integer, got: {raw!r}")
+
+
+def _bool(key: str, default: bool) -> bool:
+    return os.getenv(key, str(default)).strip().lower() in ("true", "1", "yes")
+
+
+# ── Binance credentials (optional at import time; validated in main.py) ───────
+BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY", "")
+BINANCE_SECRET_KEY: str = os.getenv("BINANCE_SECRET_KEY", "")
+TESTNET: bool = _bool("TESTNET", True)
+
+# ── Trading ───────────────────────────────────────────────────────────────────
+SYMBOL: str = os.getenv("SYMBOL", "BTCUSDT")
+INTERVAL: str = os.getenv("INTERVAL", "1h")
+
+# ── Strategy ─────────────────────────────────────────────────────────────────
+CONSENSUS_THRESHOLD: float = _float("CONSENSUS_THRESHOLD", 0.65)
+
+# ── Risk management ───────────────────────────────────────────────────────────
+RISK_PER_TRADE: float = _float("RISK_PER_TRADE", 0.01)
+MAX_POSITION_PCT: float = _float("MAX_POSITION_PCT", 0.05)
+
+ATR_STOP_MULTIPLIER: float = 1.5   # stop_distance = ATR * multiplier
+TP_RR_RATIO: float = 2.0           # TP = entry + stop_distance * ratio
+
+# ── Fees / slippage ───────────────────────────────────────────────────────────
+MAKER_FEE: float = 0.001    # 0.1 %
+SLIPPAGE: float = 0.001     # 0.1 %
+
+# ── Backtest ─────────────────────────────────────────────────────────────────
+BACKTEST_DAYS: int = _int("BACKTEST_DAYS", 180)
+RUN_EXIT_EXPERIMENTS: bool = _bool("RUN_EXIT_EXPERIMENTS", False)
+RUN_SIGNAL_EXPERIMENTS: bool = _bool("RUN_SIGNAL_EXPERIMENTS", False)
+RUN_WALK_FORWARD_RESEARCH: bool = _bool("RUN_WALK_FORWARD_RESEARCH", False)
+RUN_RANGE_EXIT_RESEARCH: bool = _bool("RUN_RANGE_EXIT_RESEARCH", False)
+RUN_ENTRY_PROFILE_RESEARCH: bool = _bool("RUN_ENTRY_PROFILE_RESEARCH", False)
+RUN_ENTRY_ALTERNATIVE_HORIZONS: bool = _bool("RUN_ENTRY_ALTERNATIVE_HORIZONS", False)
+RUN_ENTRY_DIAGNOSIS: bool = _bool("RUN_ENTRY_DIAGNOSIS", False)
+RUN_RANGE_MEAN_REVERSION: bool = _bool("RUN_RANGE_MEAN_REVERSION", False)
+
+# ── Research-only setup family config ────────────────────────────────────────
+# These values are used only by backtest research helpers and never by live mode.
+RESEARCH_BREAKOUT_LOOKBACK: int = _int("RESEARCH_BREAKOUT_LOOKBACK", 20)
+RESEARCH_BREAKOUT_MIN_VOLUME_RATIO: float = _float("RESEARCH_BREAKOUT_MIN_VOLUME_RATIO", 1.5)
+RESEARCH_BREAKOUT_REQUIRE_RETEST: bool = _bool("RESEARCH_BREAKOUT_REQUIRE_RETEST", False)
+RESEARCH_PULLBACK_LOOKBACK: int = _int("RESEARCH_PULLBACK_LOOKBACK", 12)
+RESEARCH_RECLAIM_LOOKBACK: int = _int("RESEARCH_RECLAIM_LOOKBACK", 3)
+RESEARCH_RANGE_LOOKBACK: int = _int("RESEARCH_RANGE_LOOKBACK", 24)
+RESEARCH_RANGE_MIN_VWAP_BUCKET: str = os.getenv("RESEARCH_RANGE_MIN_VWAP_BUCKET", "medium").strip().lower()
+if RESEARCH_RANGE_MIN_VWAP_BUCKET not in ("close", "medium", "far"):
+    sys.exit(
+        "[config] 'RESEARCH_RANGE_MIN_VWAP_BUCKET' must be one of "
+        "'close', 'medium', or 'far'."
+    )
+
+# ── Operational ──────────────────────────────────────────────────────────────
+LOOKBACK_CANDLES: int = _int("LOOKBACK_CANDLES", 1000)  # 1000 1H -> ~500 2H bars after resampling, clears 202-bar warmup gate
+LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# ── Indicator periods (not user-configurable but centralised here) ─────────--
+ADX_PERIOD: int = 14
+ATR_PERIOD: int = 14
+EMA_FAST: int = 9
+EMA_SLOW: int = 21
+MACD_FAST: int = 12
+MACD_SLOW: int = 26
+MACD_SIGNAL: int = 9
+RSI_PERIOD: int = 14
+STOCH_K: int = 14
+STOCH_D: int = 3
+STOCH_SMOOTH_K: int = 3
+BB_PERIOD: int = 20
+BB_STD: float = 2.0
+VOLUME_MA_PERIOD: int = 20
+
+# ── Regime thresholds ─────────────────────────────────────────────────────────
+ADX_TREND_THRESHOLD: float = 25.0
+ATR_HIGH_VOL_THRESHOLD_PCT: float = 3.0   # ATR as % of close
+
+# ── Staged exit parameters (switchable for experiments) ───────────────────────
+STALL_EXIT_ENABLED: bool = False      # F2: stall exit disabled
+STALL_CANDLES: int = 6                # stall exit if stuck this many candles
+STALL_R_THRESHOLD: float = 0.3        # ...and profit_R below this
+TIME_CANDLES: int = 30                # time exit after N candles
+TIME_R_THRESHOLD: float = 0.5         # ...and profit_R below this
+DEFAULT_STAGE_B_R: float = 0.8        # profit_R to activate Stage-B trail
+DEFAULT_STAGE_B_ATR_MULT: float = 1.2  # Stage-B trail width (×ATR)
+DEFAULT_PARTIAL_TP_R: float = 1.5     # F2: partial TP target (×R)
+STAGE_C_ATR_MULT: float = 1.5         # F2: Stage-C trail width after partial TP
+BE_OFFSET_R: float = 0.1              # stop moves to entry + BE_OFFSET_R×R after TP
+
+# ── Entry quality gates ───────────────────────────────────────────────────────
+REQUIRE_MACD: bool = True             # MACD must fire to approve any entry
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  [ROBUSTNESS]  — 9 structural improvements, all additive / opt-in           ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+# 1. Regime filter ─────────────────────────────────────────────────────────────
+ADX_RANGING_THRESHOLD: float = _float("ADX_RANGING_THRESHOLD", 20.0)
+# ADX_TREND_THRESHOLD=25 already defined above; used as "trending" boundary
+ATR_HIGH_VOL_MULTIPLIER: float = _float("ATR_HIGH_VOL_MULTIPLIER", 1.5)
+ATR_HIGH_VOL_PERIOD: int = _int("ATR_HIGH_VOL_PERIOD", 20)
+
+# 2. Volatility-scaled TP/SL ───────────────────────────────────────────────────
+TP_ATR_MULTIPLIER: float = _float("TP_ATR_MULTIPLIER", 1.5)
+SL_ATR_MULTIPLIER: float = _float("SL_ATR_MULTIPLIER", 1.0)
+MIN_RR_RATIO: float = _float("MIN_RR_RATIO", 1.3)
+
+# 3. Walk-forward by regime ────────────────────────────────────────────────────
+WF_WINDOW_DAYS: int = _int("WF_WINDOW_DAYS", 90)
+WF_BACKTEST_DAYS: int = _int("WF_BACKTEST_DAYS", 1460)
+WF_MIN_TRADES: int = _int("WF_MIN_TRADES", 15)
+WF_PASS_PCT: float = _float("WF_PASS_PCT", 0.70)
+WF_MIN_PF: float = _float("WF_MIN_PF", 1.2)
+RUN_ROBUSTNESS_WALK_FORWARD: bool = _bool("RUN_ROBUSTNESS_WALK_FORWARD", False)
+
+# 4. Tiered exit ───────────────────────────────────────────────────────────────
+MAX_TRADE_BARS: int = _int("MAX_TRADE_BARS", 12)
+PARTIAL_TP_LEVEL: float = _float("PARTIAL_TP_LEVEL", 0.75)
+PARTIAL_TP_CLOSE_PCT: float = _float("PARTIAL_TP_CLOSE_PCT", 0.40)
+MOMENTUM_EXIT_RSI_PERIOD: int = _int("MOMENTUM_EXIT_RSI_PERIOD", 7)
+MOMENTUM_EXIT_MIN_R: float = _float("MOMENTUM_EXIT_MIN_R", 0.5)
+ENABLE_PARTIAL_TP: bool = _bool("ENABLE_PARTIAL_TP", False)
+ENABLE_TIME_STOP: bool = _bool("ENABLE_TIME_STOP", False)
+ENABLE_MOMENTUM_EXIT: bool = _bool("ENABLE_MOMENTUM_EXIT", False)
+ENABLE_ATR_TRAIL: bool = _bool("ENABLE_ATR_TRAIL", False)
+ATR_TRAIL_ACTIVATION_R: float = _float("ATR_TRAIL_ACTIVATION_R", 0.5)
+ATR_TRAIL_MULTIPLIER: float = _float("ATR_TRAIL_MULTIPLIER", 1.0)
+ENABLE_VOLUME_GATE_MOMENTUM: bool = _bool("ENABLE_VOLUME_GATE_MOMENTUM", False)
+VOLUME_GATE_MIN_RATIO: float = _float("VOLUME_GATE_MIN_RATIO", 1.2)    # vol > N×avg to allow momentum exit
+NATR_MEDIUM_MIN: float = _float("NATR_MEDIUM_MIN", 0.003)
+NATR_MEDIUM_MAX: float = _float("NATR_MEDIUM_MAX", 0.007)
+# Tier 1.9: 2-bar close momentum-fade exit (no RSI required, pure price action)
+ENABLE_MOMENTUM_FADE_EXIT: bool = _bool("ENABLE_MOMENTUM_FADE_EXIT", False)
+MOMENTUM_FADE_MIN_R: float = _float("MOMENTUM_FADE_MIN_R", 0.75)
+# Partial exit at exactly 1.0R with remainder trailed by ATR
+ENABLE_PARTIAL_1R: bool = _bool("ENABLE_PARTIAL_1R", False)
+PARTIAL_1R_CLOSE_PCT: float = _float("PARTIAL_1R_CLOSE_PCT", 0.50)
+# Anti-chase filter: block entries with extended 3c AND 6c pre-entry moves
+ANTI_CHASE_ENABLED: bool = _bool("ANTI_CHASE_ENABLED", False)
+ANTI_CHASE_3C_LEVEL: str = os.getenv("ANTI_CHASE_3C_LEVEL", "high").strip().lower()   # bucket threshold
+ANTI_CHASE_6C_LEVEL: str = os.getenv("ANTI_CHASE_6C_LEVEL", "high").strip().lower()
+# Regime gate: allow HIGH_VOLATILITY entries alongside RANGING
+REGIME_GATE_MR: bool = _bool("REGIME_GATE_MR", False)   # gate range-MR entries on RANGING/HIGH_VOL
+REGIME_GATE_ALLOW_HIGH_VOL: bool = _bool("REGIME_GATE_ALLOW_HIGH_VOL", True)  # include HIGH_VOLATILITY
+# Entry confirmation buffer enabled in research simulations
+ENTRY_BUFFER_RESEARCH: bool = _bool("ENTRY_BUFFER_RESEARCH", False)
+
+# 5. Sample guard ──────────────────────────────────────────────────────────────
+MIN_WINDOW_TRADES: int = _int("MIN_WINDOW_TRADES", 20)
+VALID_WINDOW_PCT: float = _float("VALID_WINDOW_PCT", 0.70)
+
+# 6. Entry confirmation buffer ─────────────────────────────────────────────────
+ENTRY_BUFFER_PCT: float = _float("ENTRY_BUFFER_PCT", 0.0015)
+
+# ── Range mean-reversion live strategy ────────────────────────────────────────
+# Thresholds calibrated from 1460-day 2H walk-forward research (May 2026).
+# ATR% = ATR / close × 100; volume_ratio = volume / 20-bar volume MA.
+ENABLE_RANGE_MR: bool    = _bool("ENABLE_RANGE_MR",    False)
+RMR_ATR_LOW_PCT: float   = _float("RMR_ATR_LOW_PCT",   0.30)   # ATR% below → low bucket
+RMR_ATR_HIGH_PCT: float  = _float("RMR_ATR_HIGH_PCT",  0.60)   # ATR% above → high bucket
+RMR_VOL_LOW: float       = _float("RMR_VOL_LOW",       1.30)   # vol ratio below → low bucket
+RMR_VOL_HIGH: float      = _float("RMR_VOL_HIGH",      2.00)   # vol ratio above → high bucket
+RMR_VWAP_FAR_R: float    = _float("RMR_VWAP_FAR_R",    1.00)   # VWAP dist (in R) above → far
+RMR_TP_RR_RATIO: float   = _float("RMR_TP_RR_RATIO",   1.50)   # TP = entry + stop × ratio
+# ADX gate for RMR entries: only fire mean-reversion when ADX < this threshold.
+# Lower than ADX_TREND_THRESHOLD (25) to restrict RMR to more truly-ranging markets.
+RMR_ADX_THRESHOLD: float = _float("RMR_ADX_THRESHOLD", 20.0)
+# Trend-following path: when ADX > RMR_ADX_THRESHOLD, optionally fire a LONG
+# trend entry using EMA crossover + RSI confirmation.  Disabled by default
+# (not yet walk-forward validated).
+RMR_TREND_ENTRY: bool       = _bool("RMR_TREND_ENTRY",       False)
+RMR_TREND_RSI_MIN: float    = _float("RMR_TREND_RSI_MIN",    55.0)  # RSI floor for trend entries
+RMR_TREND_ADX_MAX: float    = _float("RMR_TREND_ADX_MAX",    40.0)  # skip ultra-strong trends
+
+# 7. Volatility band gate for shorts ───────────────────────────────────────────
+SHORT_MAX_NATR: float = _float("SHORT_MAX_NATR", 0.008)
+SHORT_MIN_NATR: float = _float("SHORT_MIN_NATR", 0.002)
+
+# 8. Multi-timeframe confirmation ──────────────────────────────────────────────
+MTF_ADX_THRESHOLD: float = _float("MTF_ADX_THRESHOLD", 22.0)
+MTF_BB_SIGMA: float = _float("MTF_BB_SIGMA", 1.5)
+MTF_CONFIRMATION: bool = _bool("MTF_CONFIRMATION", True)
+
+# 9. Research mode targets ─────────────────────────────────────────────────────
+# Comma-separated setup names to run in --mode research (empty = all)
+_RESEARCH_TARGETS_RAW: str = os.getenv("RESEARCH_TARGETS", "")
+RESEARCH_TARGETS: list[str] = (
+    [t.strip() for t in _RESEARCH_TARGETS_RAW.split(",") if t.strip()]
+    if _RESEARCH_TARGETS_RAW.strip()
+    else []
+)
+
+
+def validate_live_credentials() -> None:
+    """Call this in live trading mode to ensure API keys are present."""
+    if not BINANCE_API_KEY or not BINANCE_SECRET_KEY:
+        sys.exit(
+            "[config] BINANCE_API_KEY and BINANCE_SECRET_KEY must be set "
+            "for live trading. See .env.example."
+        )
