@@ -8,3 +8,7 @@ supervisor.pid
 supervisor_out.log
 bot.log
 .DS_Store
+
+# Large research output CSVs — not needed in repo
+outputs/
+*.csv
