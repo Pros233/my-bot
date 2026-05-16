@@ -15,6 +15,7 @@ import signal
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 import pandas as pd
@@ -22,6 +23,7 @@ import pandas_ta as ta  # noqa: F401 — registers .ta accessor
 from binance.client import Client
 from binance.exceptions import BinanceAPIException, BinanceOrderException
 
+import alerts
 import config
 import logger
 from risk import TradeParams
@@ -48,6 +50,15 @@ class OpenPosition:
     be_stop_order_id: Optional[int] = None     # BE stop for remaining position
     # ── MR_EXIT_14 state (ENABLE_MOMENTUM_EXIT) ───────────────────────────────
     prev_rsi7: Optional[float] = None          # RSI(7) from previous candle check
+    # ── Trade journal context (set in execute_buy) ────────────────────────────
+    strategy: str = "UNKNOWN"
+    regime: str = ""
+    adx: float = 0.0
+    atr_pct: float = 0.0
+    score_pct: float = 0.0
+    entry_balance: float = 0.0
+    fees_estimated: float = 0.0
+    opened_at_utc: str = ""
 
 
 # ── Retry helper ──────────────────────────────────────────────────────────────
@@ -76,8 +87,9 @@ def _with_retry(fn, max_retries: int = 3, base_delay: float = 2.0):
 # ── Execution engine ──────────────────────────────────────────────────────────
 
 class ExecutionEngine:
-    def __init__(self, client: Client) -> None:
+    def __init__(self, client: Client, symbol: str = config.SYMBOL) -> None:
         self.client = client
+        self.symbol = symbol
         self.position: Optional[OpenPosition] = None
         self._shutdown_requested = False
 
@@ -119,7 +131,7 @@ class ExecutionEngine:
         """
         try:
             open_orders = _with_retry(
-                lambda: self.client.get_open_orders(symbol=config.SYMBOL)
+                lambda: self.client.get_open_orders(symbol=self.symbol)
             )
         except Exception as exc:
             logger.log_error("Could not fetch open orders on sync", exc)
@@ -132,7 +144,16 @@ class ExecutionEngine:
             )
             self._cancel_all_orders()
 
-    def execute_buy(self, params: TradeParams) -> bool:
+    def execute_buy(
+        self,
+        params: TradeParams,
+        strategy: str = "CONSENSUS",
+        regime: str = "",
+        adx: float = 0.0,
+        atr_pct: float = 0.0,
+        score_pct: float = 0.0,
+        balance: float = 0.0,
+    ) -> bool:
         """
         Full BUY flow:
           1. Market buy
@@ -153,11 +174,12 @@ class ExecutionEngine:
         # 1. Place market buy
         try:
             buy_order = _with_retry(lambda: self.client.order_market_buy(
-                symbol=config.SYMBOL,
+                symbol=self.symbol,
                 quantity=qty,
             ))
         except Exception as exc:
             logger.log_error("Market BUY order failed", exc)
+            alerts.alert_order_failed(self.symbol, "MARKET BUY", str(exc))
             return False
 
         buy_id = buy_order["orderId"]
@@ -166,6 +188,7 @@ class ExecutionEngine:
         fill_price = self._await_fill(buy_id, max_retries=3)
         if fill_price is None:
             logger.log_error(f"Could not confirm fill for order {buy_id}. Aborting.")
+            alerts.alert_order_failed(self.symbol, "MARKET BUY fill unconfirmed", f"order_id={buy_id}")
             self._cancel_all_orders()
             return False
 
@@ -215,7 +238,16 @@ class ExecutionEngine:
                 stop_order_id=stop_id,
             )
 
-        from datetime import datetime, timezone
+        # Populate journal context on the position
+        self.position.strategy = strategy
+        self.position.regime = regime
+        self.position.adx = adx
+        self.position.atr_pct = atr_pct
+        self.position.score_pct = score_pct
+        self.position.entry_balance = balance
+        self.position.fees_estimated = params.fee_estimate
+        self.position.opened_at_utc = datetime.now(timezone.utc).isoformat()
+
         logger.log_trade_open(
             timestamp=datetime.now(timezone.utc),
             side="BUY",
@@ -225,6 +257,15 @@ class ExecutionEngine:
             size=qty,
             fee_est=params.fee_estimate,
             order_ids={"buy": buy_id, "tp": tp_id, "stop": stop_id},
+        )
+        alerts.alert_trade_open(
+            symbol=self.symbol,
+            side="BUY",
+            entry=fill_price,
+            stop=params.stop_price,
+            tp=params.tp_price,
+            size=qty,
+            strategy=strategy,
         )
         return True
 
@@ -271,7 +312,10 @@ class ExecutionEngine:
                                 f"(prev={prev_rsi:.1f}) with profit={profit_r:.2f}R — "
                                 f"closing {close_qty} at {exit_price:.2f}"
                             )
-                            self._clear_position(exit_price)
+                            alerts.alert_trade_close(
+                                self.symbol, exit_price, pos.fill_price, close_qty, "MARKET CLOSE"
+                            )
+                            self._clear_position(exit_price, "MARKET CLOSE")
                             return exit_price
 
         if config.ENABLE_PARTIAL_TP:
@@ -283,31 +327,85 @@ class ExecutionEngine:
                 stop_filled    = self._order_is_filled(pos.stop_order_id)
 
                 if partial_filled:
-                    # Move SL to breakeven for the remaining position
-                    self._cancel_order_safe(pos.stop_order_id)
-                    stop_dist = pos.fill_price - pos.stop_price
-                    be_price  = round(pos.fill_price + config.BE_OFFSET_R * stop_dist, 2)
-                    be_id = self._place_stop_limit_sell(pos.remaining_size, be_price)
-                    pos.be_stop_order_id = be_id
-                    pos.partial_tp_hit   = True
+                    # 1. Cancel old full-size stop
+                    cancel_note = "ok"
+                    try:
+                        self._cancel_order_safe(pos.stop_order_id)
+                    except Exception as exc:
+                        cancel_note = f"failed ({exc})"
                     logger.log_info(
                         f"Partial TP filled at {partial_filled:.2f} "
                         f"({pos.partial_tp_size} BTC closed, "
                         f"{pos.remaining_size} BTC remaining) | "
-                        f"BE stop → {be_price:.2f}"
+                        f"old stop {pos.stop_order_id} cancel: {cancel_note}"
                     )
-                    return None   # position still partially open
+                    alerts.alert_partial_tp(
+                        self.symbol, partial_filled, pos.partial_tp_size, pos.remaining_size
+                    )
+
+                    # 2. Fetch current price
+                    try:
+                        current_price = float(_with_retry(
+                            lambda: self.client.get_symbol_ticker(symbol=self.symbol)
+                        )["price"])
+                    except Exception as exc:
+                        logger.log_warning(f"Could not fetch current price for BE calc: {exc}")
+                        current_price = partial_filled
+
+                    # 3. Calculate and attempt BE stop placement
+                    stop_dist = pos.fill_price - pos.stop_price
+                    be_price  = round(pos.fill_price + config.BE_OFFSET_R * stop_dist, 2)
+                    logger.log_info(
+                        f"Current price: {current_price:.2f} | "
+                        f"Attempting BE stop at {be_price:.2f} for {pos.remaining_size} BTC"
+                    )
+                    be_id = self._place_stop_limit_sell(pos.remaining_size, be_price)
+
+                    if be_id is not None:
+                        # 4a. BE stop placed successfully
+                        pos.be_stop_order_id = be_id
+                        pos.partial_tp_hit   = True
+                        logger.log_info(f"BE stop placed — order ID {be_id}")
+                        return None   # position still partially open
+
+                    # 4b. BE stop failed — close remaining at market
+                    logger.log_warning(
+                        "BE stop placement failed — closing remaining position at market "
+                        "to avoid unprotected exposure"
+                    )
+                    exit_price = self._close_at_market(pos.remaining_size)
+                    if exit_price is not None:
+                        logger.log_info(
+                            f"Emergency market close executed at {exit_price:.2f} "
+                            f"for {pos.remaining_size} BTC"
+                        )
+                        self._clear_position(exit_price, "EMERGENCY_MARKET_CLOSE")
+                        return exit_price
+                    # Market close also failed — avoid infinite loop, flag for manual review
+                    logger.log_error(
+                        "Emergency market close failed — position may be orphaned. "
+                        "Manual intervention required."
+                    )
+                    pos.partial_tp_hit   = True
+                    pos.be_stop_order_id = None
+                    return None
 
                 if stop_filled:
                     self._cancel_order_safe(pos.partial_tp_order_id)
-                    self._clear_position(stop_filled)
+                    alerts.alert_trade_close(
+                        self.symbol, stop_filled, pos.fill_price, pos.size, "STOP HIT"
+                    )
+                    self._clear_position(stop_filled, "STOP HIT")
                     return stop_filled
 
             else:
                 # ── Phase 2: waiting for BE stop (remaining position) ──────────
                 be_filled = self._order_is_filled(pos.be_stop_order_id)
                 if be_filled:
-                    self._clear_position(be_filled)
+                    alerts.alert_trade_close(
+                        self.symbol, be_filled, pos.fill_price, pos.remaining_size, "BE STOP"
+                    )
+                    self._clear_position(be_filled, "BE STOP")
                     return be_filled
 
             return None
@@ -318,12 +416,18 @@ class ExecutionEngine:
 
         if tp_filled:
             self._cancel_order_safe(self.position.stop_order_id)
-            self._clear_position(tp_filled)
+            alerts.alert_trade_close(
+                self.symbol, tp_filled, self.position.fill_price, self.position.size, "TP HIT"
+            )
+            self._clear_position(tp_filled, "TP HIT")
             return tp_filled
 
         if stop_filled:
             self._cancel_order_safe(self.position.tp_order_id)
-            self._clear_position(stop_filled)
+            alerts.alert_trade_close(
+                self.symbol, stop_filled, self.position.fill_price, self.position.size, "STOP HIT"
+            )
+            self._clear_position(stop_filled, "STOP HIT")
             return stop_filled
 
         return None
@@ -331,6 +435,7 @@ class ExecutionEngine:
     def emergency_shutdown(self, reason: str = "Unhandled exception") -> None:
         """Cancel all open orders, log state, and exit the process."""
         logger.log_error(f"EMERGENCY SHUTDOWN: {reason}")
+        alerts.alert_emergency_shutdown(reason)
         self._cancel_all_orders()
         sys.exit(1)
 
@@ -341,7 +446,7 @@ class ExecutionEngine:
         for attempt in range(max_retries):
             try:
                 order = _with_retry(lambda: self.client.get_order(
-                    symbol=config.SYMBOL, orderId=order_id
+                    symbol=self.symbol, orderId=order_id
                 ))
             except Exception:
                 time.sleep(2 ** attempt)
@@ -359,7 +464,7 @@ class ExecutionEngine:
     def _place_limit_sell(self, qty: float, price: float) -> Optional[int]:
         try:
             order = _with_retry(lambda: self.client.order_limit_sell(
-                symbol=config.SYMBOL,
+                symbol=self.symbol,
                 quantity=qty,
                 price=f"{price:.2f}",
                 timeInForce="GTC",
@@ -374,7 +479,7 @@ class ExecutionEngine:
         limit_price = round(stop_price * 0.999, 2)
         try:
             order = _with_retry(lambda: self.client.create_order(
-                symbol=config.SYMBOL,
+                symbol=self.symbol,
                 side="SELL",
                 type="STOP_LOSS_LIMIT",
                 quantity=qty,
@@ -393,7 +498,7 @@ class ExecutionEngine:
             return None
         try:
             order = _with_retry(lambda: self.client.get_order(
-                symbol=config.SYMBOL, orderId=order_id
+                symbol=self.symbol, orderId=order_id
             ))
             if order.get("status") == "FILLED":
                 executed_qty = float(order.get("executedQty", 0))
@@ -409,14 +514,14 @@ class ExecutionEngine:
             return
         try:
             _with_retry(lambda: self.client.cancel_order(
-                symbol=config.SYMBOL, orderId=order_id
+                symbol=self.symbol, orderId=order_id
             ))
         except Exception as exc:
             logger.log_warning(f"Could not cancel order {order_id}: {exc}")
 
     def _cancel_all_orders(self) -> None:
         try:
-            self.client.cancel_all_open_orders(symbol=config.SYMBOL)
+            self.client.cancel_all_open_orders(symbol=self.symbol)
             logger.log_info("All open orders cancelled.")
         except BinanceAPIException as exc:
             if exc.code == -2011:
@@ -431,7 +536,7 @@ class ExecutionEngine:
         self._cancel_all_orders()
         try:
             order = _with_retry(lambda: self.client.order_market_sell(
-                symbol=config.SYMBOL,
+                symbol=self.symbol,
                 quantity=qty,
             ))
             sell_id = order["orderId"]
@@ -441,8 +546,25 @@ class ExecutionEngine:
             logger.log_error("Market SELL (momentum exit) failed", exc)
             return None
 
-    def _clear_position(self, exit_price: float) -> None:
-        """Wipe local position state (called after confirmed close)."""
+    def _clear_position(self, exit_price: float, close_type: str = "UNKNOWN") -> None:
+        """Wipe local position state, report PnL to pause_manager, write trade journal."""
+        if self.position is not None:
+            realized_pnl = (exit_price - self.position.fill_price) * self.position.size
+            try:
+                import pause_manager
+                pause_manager.record_close(realized_pnl, close_type)
+            except Exception as exc:
+                logger.log_warning(f"pause_manager.record_close failed (non-critical): {exc}")
+            try:
+                import trade_journal
+                trade_journal.record_trade(
+                    symbol=self.symbol,
+                    position=self.position,
+                    exit_price=exit_price,
+                    close_reason=close_type,
+                )
+            except Exception as exc:
+                logger.log_warning(f"trade_journal.record_trade failed (non-critical): {exc}")
         self.position = None
 
     def _signal_handler(self, signum, frame) -> None:  # noqa: ANN001

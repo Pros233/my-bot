@@ -261,6 +261,13 @@ MAX_OPEN_TRADES: int = _int("MAX_OPEN_TRADES", 1)
 MAX_TOTAL_RISK: float = _float("MAX_TOTAL_RISK", 0.01)
 
 
+# ── Dashboard (read-only web UI) ─────────────────────────────────────────────
+ENABLE_DASHBOARD: bool = _bool("ENABLE_DASHBOARD", False)
+DASHBOARD_HOST: str = os.getenv("DASHBOARD_HOST", "127.0.0.1")
+DASHBOARD_PORT: int = _int("DASHBOARD_PORT", 8080)
+# Required — dashboard refuses to start if empty
+DASHBOARD_PASSWORD: str = os.getenv("DASHBOARD_PASSWORD", "")
+
 # ── Arbitrage scanner (watch-only) ───────────────────────────────────────────
 ENABLE_ARBITRAGE_SCANNER: bool = _bool("ENABLE_ARBITRAGE_SCANNER", False)
 # ARB_AUTO_TRADE is hard-locked to False regardless of any env var setting.

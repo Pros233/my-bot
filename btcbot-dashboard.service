@@ -1,0 +1,20 @@
+[Unit]
+Description=BTC Bot Read-Only Dashboard
+After=network.target
+# Soft dependency — dashboard can start even if btcbot is down
+Wants=btcbot.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/btcbot
+ExecStart=/opt/btcbot/.venv/bin/python /opt/btcbot/dashboard_server.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/btcbot/dashboard.log
+StandardError=append:/opt/btcbot/dashboard.log
+# Never allow the dashboard to be upgraded to a trading-capable process
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
