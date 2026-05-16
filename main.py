@@ -18,13 +18,22 @@ import signal
 import socket
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 import pandas as pd
 import pandas_ta as ta  # noqa: F401 — register .ta accessor globally
 from binance.client import Client
 
+import alerts
 import config
+import pause_manager
+import performance
+import trade_journal
+import arbitrage_scanner
+import trend_scanner
+import trend_outcome_tracker
 import regime as reg
 import consensus as con
 import risk
@@ -78,129 +87,305 @@ def _seconds_until_next_hour() -> float:
     return max((next_hour - now).total_seconds() + 5, 0.0)
 
 
+# ── Scanner types ─────────────────────────────────────────────────────────────
+
+@dataclass
+class ScanResult:
+    symbol: str
+    df: pd.DataFrame
+    trend: str = ""
+    vol: str = ""
+    adx: float = 0.0
+    atr_pct: float = 0.0
+    consensus: object = None   # con.ConsensusResult | None
+    rmr: object = None         # RangeMRSignal | None
+    decision: str = "NO_DATA"  # BUY | RMR_LONG | HOLD | SKIP | NO_DATA
+    rank_score: float = 0.0
+    rank_reason: str = ""
+    reject_reason: str = ""
+
+
+def _fetch_candles_for(
+    client: Client,
+    data_client: Optional[Client],
+    symbol: str,
+) -> pd.DataFrame:
+    klines = (data_client or client).get_klines(
+        symbol=symbol,
+        interval=config.INTERVAL,
+        limit=config.LOOKBACK_CANDLES,
+    )
+    return _klines_to_df(klines).iloc[:-1]  # drop still-forming candle
+
+
+def scan_symbol(
+    client: Client,
+    data_client: Optional[Client],
+    symbol: str,
+    now_utc: datetime,
+) -> ScanResult:
+    """Fetch candles and evaluate regime, consensus, and RMR for one symbol."""
+    try:
+        df = _fetch_candles_for(client, data_client, symbol)
+    except Exception as exc:
+        logger.log_warning(f"SCAN | {symbol} | fetch failed: {exc}")
+        return ScanResult(symbol=symbol, df=pd.DataFrame(),
+                          decision="NO_DATA", reject_reason=f"fetch error: {exc}")
+
+    if df.empty or len(df) < 50:
+        return ScanResult(symbol=symbol, df=df,
+                          decision="NO_DATA", reject_reason="insufficient candle data")
+
+    trend, vol = reg.classify(df)
+    adx_df = df.ta.adx(length=config.ADX_PERIOD)
+    atr_series = df.ta.atr(length=config.ATR_PERIOD)
+    adx_val = float(adx_df[f"ADX_{config.ADX_PERIOD}"].iloc[-1])
+    atr_val = float(atr_series.iloc[-1])
+    atr_pct = (atr_val / float(df["close"].iloc[-1])) * 100.0
+
+    consensus = con.compute(df, trend, vol)
+    result = ScanResult(
+        symbol=symbol, df=df, trend=trend, vol=vol,
+        adx=adx_val, atr_pct=atr_pct, consensus=consensus,
+    )
+
+    if not reg.regime_allows_trade(trend, vol):
+        result.decision = "SKIP"
+        result.reject_reason = f"regime {reg.regime_label(trend, vol)}"
+        return result
+
+    # ── RMR check (2H, LONG-biased, even hours only) ──────────────────────────
+    if config.ENABLE_RANGE_MR and now_utc.hour % 2 == 0:
+        df_2h = resample_1h_to_2h(df)
+        rmr = get_signal_2h(df_2h)
+        result.rmr = rmr
+        if rmr.direction == "LONG":
+            result.decision = "RMR_LONG"
+            result.rank_score = 200.0 + consensus.ratio * 100.0
+            result.rank_reason = (
+                f"RMR LONG [{rmr.signal_type}] ADX={adx_val:.1f} "
+                f"ATR={rmr.atr_bucket}({atr_pct:.2f}%) VOL={rmr.volume_bucket} "
+                f"VWAP_dist={rmr.vwap_distance_r:.2f}R"
+            )
+            return result
+        else:
+            result.reject_reason = rmr.reject_reason
+
+    # ── Consensus BUY check ───────────────────────────────────────────────────
+    if consensus.decision == con.BUY:
+        result.decision = "BUY"
+        result.rank_score = 100.0 + consensus.ratio * 100.0
+        result.rank_reason = (
+            f"score={consensus.score:.2f}/{consensus.max_possible:.2f} "
+            f"({consensus.ratio * 100:.1f}%)"
+        )
+    else:
+        result.decision = "HOLD"
+
+    return result
+
+
+# ── Performance report helper ─────────────────────────────────────────────────
+
+def _send_performance_report(
+    open_count: int,
+    balance: float,
+    symbols: list[str],
+    report_type: str = "Daily",
+) -> None:
+    """Pull stats from trades.db and send a Telegram performance report."""
+    try:
+        now_utc = datetime.now(timezone.utc)
+        today = now_utc.strftime("%Y-%m-%d")
+        iso = now_utc.isocalendar()
+        this_week = f"{iso[0]}-W{iso[1]:02d}"
+
+        alerts.alert_daily_report(
+            total_pnl=performance.total_pnl(),
+            daily_pnl=performance.daily_pnl(today),
+            weekly_pnl=performance.weekly_pnl(this_week),
+            total_trades=performance.total_trades(),
+            win_rate=performance.win_rate(),
+            max_dd_pct=performance.max_drawdown_pct(),
+            best_sym=performance.best_symbol() or "—",
+            worst_sym=performance.worst_symbol() or "—",
+            open_positions=open_count,
+            is_paused=pause_manager.is_paused(),
+            symbols=symbols,
+            report_type=report_type,
+        )
+    except Exception as exc:
+        logger.log_warning(f"Performance report failed (non-critical): {exc}")
+
+
 # ── Live trading loop ─────────────────────────────────────────────────────────
 
 def live(client: Client, data_client: Client | None = None) -> None:
-    engine = ExecutionEngine(client)
+    symbols = config.SYMBOLS
+    engines: dict[str, ExecutionEngine] = {
+        sym: ExecutionEngine(client, sym) for sym in symbols
+    }
 
-    logger.log_info(f"Live trading started — {config.SYMBOL} {config.INTERVAL} "
-                    f"({'TESTNET' if config.TESTNET else 'LIVE'})")
+    logger.log_info(
+        f"Live trading started — {config.INTERVAL} "
+        f"({'TESTNET' if config.TESTNET else 'LIVE'}) "
+        f"| symbols: {', '.join(symbols)} | MAX_OPEN_TRADES={config.MAX_OPEN_TRADES}"
+    )
     if config.ENABLE_RANGE_MR:
         logger.log_info(
             "RMR strategy active — promoted setup RMR_2H_NO_FAR_VWAP_LONG_BIASED_BLOCK_LONG_HIGHATR_HIGHVOL "
             "(48/168 variants pass 1460-day walk-forward gate, May 2026)."
         )
     else:
-        # MACD+VWAP consensus has not passed walk-forward validation.
         logger.log_warning(
             "MACD+VWAP research setup failed walk-forward validation. "
             "Set ENABLE_RANGE_MR=true to activate the validated RMR strategy."
         )
 
-    # Initial reconnect safety — reconcile any orphaned orders
-    engine.sync_open_orders()
+    # Reconcile orphaned orders on all symbols
+    for engine in engines.values():
+        engine.sync_open_orders()
+
+    alerts.alert_startup(symbols)
+
+    # ── Initialise trade journal DB and print historical stats ────────────────
+    trade_journal._ensure_db()
+    try:
+        _n = performance.total_trades()
+        if _n > 0:
+            logger.log_info(
+                f"HISTORICAL STATS | trades={_n} | "
+                f"win_rate={performance.win_rate():.1%} | "
+                f"total_pnl={performance.total_pnl():+.4f} USDT | "
+                f"max_dd={performance.max_drawdown_pct():.2f}% | "
+                f"consec_losses={performance.consecutive_losses()}"
+            )
+        else:
+            logger.log_info("HISTORICAL STATS | No trades recorded yet.")
+    except Exception as _exc:
+        logger.log_warning(f"Could not read historical stats: {_exc}")
+
+    # ── Report tracking (reset per bot run) ───────────────────────────────────
+    _last_daily_report: str = ""
+    _last_weekly_report: str = ""
 
     def _cycle_timeout(_signum, _frame):
         raise TimeoutError("Candle cycle timed out (network stall)")
 
     signal.signal(signal.SIGALRM, _cycle_timeout)
-    signal.siginterrupt(signal.SIGALRM, True)  # don't restart syscalls on SIGALRM
+    signal.siginterrupt(signal.SIGALRM, True)
+
+    # Single shutdown handler covers all symbols
+    def _shutdown_all(signum, _frame):
+        logger.log_error(f"EMERGENCY SHUTDOWN: Signal {signum} received")
+        for eng in engines.values():
+            eng._cancel_all_orders()
+        sys.exit(1)
+
+    signal.signal(signal.SIGINT, _shutdown_all)
+    signal.signal(signal.SIGTERM, _shutdown_all)
 
     while True:
         try:
             # ── Wait for next candle close ────────────────────────────────────
             wait_secs = _seconds_until_next_hour()
             logger.log_info(f"Sleeping {wait_secs:.0f}s until next candle close…")
-            time.sleep(wait_secs)
+            wake_at = datetime.now(timezone.utc) + timedelta(seconds=wait_secs)
+            while True:
+                remaining = (wake_at - datetime.now(timezone.utc)).total_seconds()
+                if remaining <= 0:
+                    break
+                time.sleep(min(30, remaining))
 
-            # ── Hard 90 s OS-level timeout covers all network calls in cycle ──
-            # finally block guarantees alarm is cancelled on every exit path,
-            # including inner continue statements.
-            signal.alarm(90)
+            # Scale hard timeout with symbol count (30 s per symbol, min 90 s)
+            signal.alarm(max(90, 30 * len(symbols)))
             try:
-                # ── Refresh HTTP session — drop any stale CLOSE_WAIT socket ──
                 client.session.close()
                 if data_client is not None:
                     data_client.session.close()
 
-                # ── Clock sync check ──────────────────────────────────────────
-                engine.check_clock_sync()
-
-                # ── Fetch candles ─────────────────────────────────────────────
-                df = fetch_candles(client, data_client)
-                if df.empty or len(df) < 50:
-                    logger.log_warning("Insufficient candle data, skipping cycle.")
-                    continue
-
-                # ── Regime classification ─────────────────────────────────────
-                trend, vol = reg.classify(df)
-
-                adx_df = df.ta.adx(length=config.ADX_PERIOD)
-                atr_series = df.ta.atr(length=config.ATR_PERIOD)
-                adx_val = float(adx_df[f"ADX_{config.ADX_PERIOD}"].iloc[-1])
-                atr_val = float(atr_series.iloc[-1])
-                close_val = float(df["close"].iloc[-1])
-                atr_pct = (atr_val / close_val) * 100.0
+                # Clock sync once per cycle on the primary engine
+                engines[symbols[0]].check_clock_sync()
 
                 now_utc = datetime.now(timezone.utc)
 
-                if not reg.regime_allows_trade(trend, vol):
-                    logger.log_skip(now_utc, f"Regime {reg.regime_label(trend, vol)} — no trade.")
-                    balance = get_usdt_balance(client)
-                    result = con.compute(df, trend, vol)
-                    dashboard.print_status(
-                        symbol=config.SYMBOL,
-                        interval=config.INTERVAL,
-                        trend=trend, vol=vol,
-                        adx=adx_val, atr_pct=atr_pct,
-                        consensus=result,
-                        decision="SKIP",
-                        balance=balance,
-                        open_trades=1 if engine.has_open_position() else 0,
-                    )
-                    continue
+                # ── Scan all symbols ──────────────────────────────────────────
+                results: dict[str, ScanResult] = {
+                    sym: scan_symbol(client, data_client, sym, now_utc)
+                    for sym in symbols
+                }
 
-                # ── Check existing position ───────────────────────────────────
-                if engine.has_open_position():
-                    exit_price = engine.check_position(df)
-                    if exit_price is not None:
-                        logger.log_info(f"Position closed at {exit_price:.2f}")
+                # ── Check open positions with fresh candle data ───────────────
+                for sym, engine in engines.items():
+                    if engine.has_open_position():
+                        r = results[sym]
+                        df_sym = r.df if not r.df.empty else None
+                        exit_price = engine.check_position(df_sym)
+                        if exit_price is not None:
+                            logger.log_info(f"{sym} position closed at {exit_price:.2f}")
 
-                # ── Compute consensus ─────────────────────────────────────────
-                result = con.compute(df, trend, vol)
                 balance = get_usdt_balance(client)
+                pause_manager.update_balance(balance)
+                open_count = sum(1 for e in engines.values() if e.has_open_position())
 
-                logger.log_cycle(now_utc, trend, vol, adx_val, atr_pct, result, result.decision)
+                # ── Log per-symbol CYCLE + SCAN lines ────────────────────────
+                for sym, r in results.items():
+                    if r.consensus is not None:
+                        logger.log_cycle(
+                            now_utc, r.trend, r.vol, r.adx, r.atr_pct,
+                            r.consensus, r.decision,
+                        )
+                        if r.rmr is not None and r.decision != "RMR_LONG":
+                            logger.log_info(
+                                f"RMR skip [{r.rmr.signal_type}] ADX={r.adx:.1f}: "
+                                f"{r.rmr.reject_reason}"
+                            )
+                    score_str = (
+                        f"{r.consensus.score:.2f}/{r.consensus.max_possible:.2f} "
+                        f"({r.consensus.ratio * 100:.1f}%)"
+                        if r.consensus else "N/A"
+                    )
+                    logger.log_info(
+                        f"SCAN | {sym} | regime={r.trend}+{r.vol} | ADX={r.adx:.1f} | "
+                        f"score={score_str} | decision={r.decision} | "
+                        f"{r.rank_reason or r.reject_reason}"
+                    )
 
-                # ── Execute if signal and no open position ────────────────────
-                entry_size = None
-                stop_p = None
-                tp_p = None
+                # ── Rank candidates ───────────────────────────────────────────
+                candidates = sorted(
+                    [r for r in results.values() if r.decision in ("BUY", "RMR_LONG")],
+                    key=lambda r: r.rank_score,
+                    reverse=True,
+                )
 
-                if result.decision == con.BUY and not engine.has_open_position():
-                    halve = reg.should_halve_position(trend, vol)
-                    entry_price = float(df["close"].iloc[-1])
-                    params = risk.calculate(df, entry_price, balance, halve)
+                if open_count >= config.MAX_OPEN_TRADES:
+                    for r in candidates:
+                        logger.log_info(
+                            f"SKIP | {r.symbol} | reason=position already open "
+                            f"({open_count}/{config.MAX_OPEN_TRADES} slots used)"
+                        )
+                elif pause_manager.is_paused():
+                    if candidates:
+                        reason = pause_manager.pause_reason()
+                        logger.log_info(
+                            f"PAUSED | reason={reason} | no new entries "
+                            f"({len(candidates)} candidate(s) suppressed)"
+                        )
+                elif candidates:
+                    best = candidates[0]
+                    for r in candidates[1:]:
+                        logger.log_info(
+                            f"SKIP | {r.symbol} | reason=lower rank "
+                            f"({r.rank_score:.1f}) than {best.symbol} ({best.rank_score:.1f})"
+                        )
+                    logger.log_info(
+                        f"BEST | symbol={best.symbol} | decision={best.decision} | "
+                        f"score={best.rank_score:.1f} | reason={best.rank_reason}"
+                    )
 
-                    entry_size = params.position_size
-                    stop_p = params.stop_price
-                    tp_p = params.tp_price
-
-                    success = engine.execute_buy(params)
-                    if not success:
-                        logger.log_warning("Order execution failed — staying flat.")
-                        entry_size = None
-
-                # ── Range MR signal (2H, LONG-biased) ────────────────────────
-                # Evaluated only on even hours when a new 2H bar has just closed.
-                if (
-                    config.ENABLE_RANGE_MR
-                    and not engine.has_open_position()
-                    and now_utc.hour % 2 == 0
-                ):
-                    df_2h = resample_1h_to_2h(df)
-                    rmr = get_signal_2h(df_2h)
-                    if rmr.direction == "LONG":
+                    engine = engines[best.symbol]
+                    if best.decision == "RMR_LONG":
+                        rmr = best.rmr
                         rmr_params = risk.TradeParams(
                             entry_price=rmr.entry_price,
                             effective_entry=rmr.entry_price,
@@ -219,45 +404,97 @@ def live(client: Client, data_client: Client | None = None) -> None:
                             halved=False,
                         )
                         logger.log_info(
-                            f"RMR LONG [{rmr.signal_type}] | ADX={adx_val:.1f} "
-                            f"ATR={rmr.atr_bucket}({atr_pct:.2f}%) VOL={rmr.volume_bucket} "
+                            f"RMR LONG [{rmr.signal_type}] | ADX={best.adx:.1f} "
+                            f"ATR={rmr.atr_bucket}({best.atr_pct:.2f}%) VOL={rmr.volume_bucket} "
                             f"VWAP={rmr.vwap:.2f} VWAP_dist={rmr.vwap_distance_r:.2f}R | "
                             f"entry={rmr.entry_price:.2f} SL={rmr.stop_price:.2f} "
                             f"TP={rmr.tp_price:.2f} RR={config.RMR_TP_RR_RATIO:.1f}R"
                         )
-                        success = engine.execute_buy(rmr_params)
-                        if success:
-                            entry_size = rmr_params.position_size
-                            stop_p = rmr_params.stop_price
-                            tp_p = rmr_params.tp_price
-                        else:
-                            logger.log_warning("RMR order execution failed — staying flat.")
-                    else:
-                        logger.log_info(
-                            f"RMR skip [{rmr.signal_type}] ADX={adx_val:.1f}: {rmr.reject_reason}"
+                        success = engine.execute_buy(
+                            rmr_params,
+                            strategy="RMR",
+                            regime=f"{best.trend}+{best.vol}",
+                            adx=best.adx,
+                            atr_pct=best.atr_pct,
+                            score_pct=best.consensus.ratio * 100.0 if best.consensus else 0.0,
+                            balance=balance,
                         )
+                        if not success:
+                            logger.log_warning(f"RMR order failed for {best.symbol} — staying flat.")
 
-                # ── Dashboard ─────────────────────────────────────────────────
-                pos = engine.position
-                dashboard.print_status(
-                    symbol=config.SYMBOL,
-                    interval=config.INTERVAL,
-                    trend=trend, vol=vol,
-                    adx=adx_val, atr_pct=atr_pct,
-                    consensus=result,
-                    decision=result.decision,
-                    balance=balance,
-                    open_trades=1 if engine.has_open_position() else 0,
-                    position_size=pos.size if pos else entry_size,
-                    stop_price=pos.stop_price if pos else stop_p,
-                    tp_price=pos.tp_price if pos else tp_p,
-                )
+                    elif best.decision == "BUY":
+                        halve = reg.should_halve_position(best.trend, best.vol)
+                        entry_price = float(best.df["close"].iloc[-1])
+                        params = risk.calculate(best.df, entry_price, balance, halve)
+                        success = engine.execute_buy(
+                            params,
+                            regime=f"{best.trend}+{best.vol}",
+                            adx=best.adx,
+                            atr_pct=best.atr_pct,
+                            score_pct=best.consensus.ratio * 100.0 if best.consensus else 0.0,
+                            balance=balance,
+                        )
+                        if not success:
+                            logger.log_warning(f"Order failed for {best.symbol} — staying flat.")
+
+                # ── Dashboard for each symbol ─────────────────────────────────
+                for sym, r in results.items():
+                    if r.consensus is None:
+                        continue
+                    eng = engines[sym]
+                    pos = eng.position
+                    dashboard.print_status(
+                        symbol=sym,
+                        interval=config.INTERVAL,
+                        trend=r.trend, vol=r.vol,
+                        adx=r.adx, atr_pct=r.atr_pct,
+                        consensus=r.consensus,
+                        decision=r.decision,
+                        balance=balance,
+                        open_trades=1 if eng.has_open_position() else 0,
+                        position_size=pos.size if pos else None,
+                        stop_price=pos.stop_price if pos else None,
+                        tp_price=pos.tp_price if pos else None,
+                    )
+
+                # ── Daily / weekly performance reports ───────────────────────
+                if config.ENABLE_DAILY_REPORT and now_utc.hour == config.REPORT_HOUR_UTC:
+                    today_str = now_utc.strftime("%Y-%m-%d")
+                    if _last_daily_report != today_str:
+                        _send_performance_report(open_count, balance, symbols, "Daily")
+                        _last_daily_report = today_str
+
+                if config.ENABLE_WEEKLY_REPORT and now_utc.hour == config.REPORT_HOUR_UTC:
+                    iso_wk = now_utc.isocalendar()
+                    week_str = f"{iso_wk[0]}-W{iso_wk[1]:02d}"
+                    if _last_weekly_report != week_str and now_utc.weekday() == 6:
+                        _send_performance_report(open_count, balance, symbols, "Weekly")
+                        _last_weekly_report = week_str
 
             finally:
-                signal.alarm(0)  # always cancel — covers continue, return, exception
+                signal.alarm(0)
 
-        except KeyboardInterrupt:
-            engine.emergency_shutdown("KeyboardInterrupt")
+            # ── Arbitrage scanner (outside SIGALRM window — watch only) ────
+            if config.ENABLE_ARBITRAGE_SCANNER:
+                try:
+                    arbitrage_scanner.run_scan(data_client or client)
+                except Exception as _arb_exc:
+                    logger.log_warning(
+                        f"arbitrage_scanner: scan failed (non-critical): {_arb_exc}"
+                    )
+
+            # ── Trend scanner (outside SIGALRM window — non-blocking) ──────
+            if config.ENABLE_TREND_SCANNER:
+                try:
+                    trend_scanner.run_scan(client)
+                except Exception as _ts_exc:
+                    logger.log_warning(f"trend_scanner: scan failed (non-critical): {_ts_exc}")
+                try:
+                    _n_outcomes = trend_outcome_tracker.track(client)
+                    if _n_outcomes:
+                        logger.log_info(f"trend_outcome_tracker: {_n_outcomes} outcome(s) recorded")
+                except Exception as _to_exc:
+                    logger.log_warning(f"trend_outcome_tracker: failed (non-critical): {_to_exc}")
 
         except (TimeoutError, socket.timeout, ConnectionError, OSError) as exc:
             logger.log_warning(f"Network error in cycle (will retry next candle): {exc}")
@@ -265,7 +502,12 @@ def live(client: Client, data_client: Client | None = None) -> None:
 
         except Exception as exc:
             logger.log_error("Unhandled exception in main loop", exc)
-            engine.emergency_shutdown(str(exc))
+            alerts.alert_exception(exc, "main loop")
+            logger.log_error(f"EMERGENCY SHUTDOWN: {exc}")
+            alerts.alert_emergency_shutdown(str(exc))
+            for eng in engines.values():
+                eng._cancel_all_orders()
+            sys.exit(1)
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────

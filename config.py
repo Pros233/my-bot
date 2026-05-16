@@ -230,6 +230,65 @@ RESEARCH_TARGETS: list[str] = (
 )
 
 
+# ── Auto-pause on drawdown ────────────────────────────────────────────────────
+AUTO_PAUSE_ON_DRAWDOWN: bool = _bool("AUTO_PAUSE_ON_DRAWDOWN", False)
+MAX_DAILY_LOSS: float = _float("MAX_DAILY_LOSS", 0.02)
+MAX_WEEKLY_LOSS: float = _float("MAX_WEEKLY_LOSS", 0.05)
+MAX_CONSECUTIVE_LOSSES: int = _int("MAX_CONSECUTIVE_LOSSES", 3)
+AUTO_UNPAUSE_DAILY: bool = _bool("AUTO_UNPAUSE_DAILY", True)
+AUTO_UNPAUSE_WEEKLY: bool = _bool("AUTO_UNPAUSE_WEEKLY", False)
+AUTO_UNPAUSE_CONSECUTIVE_LOSSES: bool = _bool("AUTO_UNPAUSE_CONSECUTIVE_LOSSES", False)
+PAUSE_UNTIL_UTC: str = os.getenv("PAUSE_UNTIL_UTC", "")
+
+# ── Trade journal reporting ───────────────────────────────────────────────────
+ENABLE_DAILY_REPORT: bool = _bool("ENABLE_DAILY_REPORT", False)
+ENABLE_WEEKLY_REPORT: bool = _bool("ENABLE_WEEKLY_REPORT", False)
+REPORT_HOUR_UTC: int = _int("REPORT_HOUR_UTC", 23)
+
+# ── Telegram alerts ───────────────────────────────────────────────────────────
+ENABLE_TELEGRAM_ALERTS: bool = _bool("ENABLE_TELEGRAM_ALERTS", False)
+TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# ── Multi-pair scanner ────────────────────────────────────────────────────────
+_SYMBOLS_RAW: str = os.getenv("SYMBOLS", "")
+SYMBOLS: list[str] = (
+    [s.strip() for s in _SYMBOLS_RAW.split(",") if s.strip()]
+    if _SYMBOLS_RAW.strip()
+    else [SYMBOL]
+)
+MAX_OPEN_TRADES: int = _int("MAX_OPEN_TRADES", 1)
+MAX_TOTAL_RISK: float = _float("MAX_TOTAL_RISK", 0.01)
+
+
+# ── Arbitrage scanner (watch-only) ───────────────────────────────────────────
+ENABLE_ARBITRAGE_SCANNER: bool = _bool("ENABLE_ARBITRAGE_SCANNER", False)
+# ARB_AUTO_TRADE is hard-locked to False regardless of any env var setting.
+# If set to True in .env the scanner logs a safety warning and ignores it.
+ARB_AUTO_TRADE: bool = False
+ARB_MIN_NET_PROFIT_PCT: float = _float("ARB_MIN_NET_PROFIT_PCT", 0.35)
+ARB_FEE_PCT: float = _float("ARB_FEE_PCT", 0.10)           # per-leg fee %
+ARB_SLIPPAGE_BUFFER_PCT: float = _float("ARB_SLIPPAGE_BUFFER_PCT", 0.15)  # total slippage %
+ARB_MAX_SPREAD_PCT: float = _float("ARB_MAX_SPREAD_PCT", 0.20)  # reject illiquid routes
+ARB_TOP_N: int = _int("ARB_TOP_N", 5)                       # max alerts per scan
+
+# ── Trend scanner ─────────────────────────────────────────────────────────────
+ENABLE_TREND_SCANNER: bool = _bool("ENABLE_TREND_SCANNER", False)
+TREND_SCANNER_TOP_N: int = _int("TREND_SCANNER_TOP_N", 5)
+TREND_MIN_QUOTE_VOLUME: float = _float("TREND_MIN_QUOTE_VOLUME", 10_000_000)
+TREND_MAX_SPREAD_PCT: float = _float("TREND_MAX_SPREAD_PCT", 0.20)
+TREND_MIN_VOLUME_SPIKE: float = _float("TREND_MIN_VOLUME_SPIKE", 1.8)
+TREND_ALERT_SCORE_THRESHOLD: float = _float("TREND_ALERT_SCORE_THRESHOLD", 75)
+ENABLE_TREND_AUTO_TRADE: bool = _bool("ENABLE_TREND_AUTO_TRADE", False)
+TREND_MAX_24H_MOVE_PCT: float = _float("TREND_MAX_24H_MOVE_PCT", 25.0)
+TREND_MAX_WICK_RATIO: float = _float("TREND_MAX_WICK_RATIO", 3.0)
+TREND_MIN_15M_CONFIRMATION: float = _float("TREND_MIN_15M_CONFIRMATION", 0.5)
+TREND_MIN_1H_CONFIRMATION: float = _float("TREND_MIN_1H_CONFIRMATION", 1.0)
+TREND_MIN_4H_CONFIRMATION: float = _float("TREND_MIN_4H_CONFIRMATION", 2.0)
+TREND_REQUIRE_MULTI_TIMEFRAME: bool = _bool("TREND_REQUIRE_MULTI_TIMEFRAME", True)
+TREND_REQUIRE_VOLUME_CONFIRMATION: bool = _bool("TREND_REQUIRE_VOLUME_CONFIRMATION", True)
+
+
 def validate_live_credentials() -> None:
     """Call this in live trading mode to ensure API keys are present."""
     if not BINANCE_API_KEY or not BINANCE_SECRET_KEY:
