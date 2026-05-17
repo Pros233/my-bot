@@ -40,6 +40,7 @@ import risk
 import logger
 import dashboard
 import backtest as bt
+import telegram_bot
 from executor import ExecutionEngine
 from strategies.range_mr import get_signal_2h, resample_1h_to_2h
 
@@ -248,6 +249,9 @@ def live(client: Client, data_client: Client | None = None) -> None:
 
     alerts.alert_startup(symbols)
 
+    # ── Start Telegram command bot daemon ────────────────────────────────────
+    telegram_bot.start(client, engines)
+
     # ── Initialise trade journal DB and print historical stats ────────────────
     trade_journal._ensure_db()
     try:
@@ -268,6 +272,8 @@ def live(client: Client, data_client: Client | None = None) -> None:
     # ── Report tracking (reset per bot run) ───────────────────────────────────
     _last_daily_report: str = ""
     _last_weekly_report: str = ""
+    _last_summary_hour: int = -1          # Telegram hourly summary
+    _last_pinned_update: float = 0.0      # Telegram pinned dashboard (monotonic)
 
     def _cycle_timeout(_signum, _frame):
         raise TimeoutError("Candle cycle timed out (network stall)")
@@ -410,15 +416,55 @@ def live(client: Client, data_client: Client | None = None) -> None:
                             f"entry={rmr.entry_price:.2f} SL={rmr.stop_price:.2f} "
                             f"TP={rmr.tp_price:.2f} RR={config.RMR_TP_RR_RATIO:.1f}R"
                         )
-                        success = engine.execute_buy(
-                            rmr_params,
-                            strategy="RMR",
-                            regime=f"{best.trend}+{best.vol}",
-                            adx=best.adx,
-                            atr_pct=best.atr_pct,
-                            score_pct=best.consensus.ratio * 100.0 if best.consensus else 0.0,
-                            balance=balance,
-                        )
+                        _tg_approved = True
+                        if getattr(config, "MANUAL_APPROVAL_MODE", False):
+                            signal.alarm(0)
+                            _tg_detail = (
+                                f"RMR LONG [{rmr.signal_type}] | `{best.symbol}`\n"
+                                f"Entry `${rmr.entry_price:,.2f}` | SL `${rmr.stop_price:,.2f}` "
+                                f"| TP `${rmr.tp_price:,.2f}` | {config.RMR_TP_RR_RATIO:.1f}R"
+                            )
+                            _tg_approved = telegram_bot.request_approval(
+                                best.symbol, _tg_detail,
+                                timeout=getattr(config, "MANUAL_APPROVAL_TIMEOUT", 300),
+                            )
+                            signal.alarm(max(90, 30 * len(symbols)))
+
+                        if not _tg_approved:
+                            logger.log_info(f"RMR trade rejected via Telegram: {best.symbol}")
+                            success = False
+                        else:
+                            success = engine.execute_buy(
+                                rmr_params,
+                                strategy="RMR",
+                                regime=f"{best.trend}+{best.vol}",
+                                adx=best.adx,
+                                atr_pct=best.atr_pct,
+                                score_pct=best.consensus.ratio * 100.0 if best.consensus else 0.0,
+                                balance=balance,
+                            )
+                            if success and getattr(config, "ENABLE_TELEGRAM_BOT", False):
+                                try:
+                                    _pos = engine.position
+                                    if _pos:
+                                        from telegram_charts import generate_trade_chart
+                                        _chart = generate_trade_chart(
+                                            best.symbol, client,
+                                            _pos.fill_price, _pos.stop_price, _pos.tp_price,
+                                        )
+                                        if _chart:
+                                            telegram_bot.send_photo(_chart,
+                                                caption=f"*{best.symbol}* RMR LONG opened @ `${_pos.fill_price:,.2f}`")
+                                        if getattr(config, "ENABLE_TELEGRAM_VOICE_ALERTS", False):
+                                            from telegram_voice import trade_opened_voice
+                                            _voice = trade_opened_voice(
+                                                best.symbol, "BUY",
+                                                _pos.fill_price, _pos.stop_price, _pos.tp_price,
+                                            )
+                                            if _voice:
+                                                telegram_bot.send_voice(_voice)
+                                except Exception as _tg_exc:
+                                    logger.log_warning(f"TG trade chart send failed: {_tg_exc}")
                         if not success:
                             logger.log_warning(f"RMR order failed for {best.symbol} — staying flat.")
 
@@ -426,14 +472,56 @@ def live(client: Client, data_client: Client | None = None) -> None:
                         halve = reg.should_halve_position(best.trend, best.vol)
                         entry_price = float(best.df["close"].iloc[-1])
                         params = risk.calculate(best.df, entry_price, balance, halve)
-                        success = engine.execute_buy(
-                            params,
-                            regime=f"{best.trend}+{best.vol}",
-                            adx=best.adx,
-                            atr_pct=best.atr_pct,
-                            score_pct=best.consensus.ratio * 100.0 if best.consensus else 0.0,
-                            balance=balance,
-                        )
+
+                        _tg_approved = True
+                        if getattr(config, "MANUAL_APPROVAL_MODE", False):
+                            signal.alarm(0)
+                            _tg_detail = (
+                                f"BUY | `{best.symbol}`\n"
+                                f"Entry `${entry_price:,.2f}` | SL `${params.stop_price:,.2f}` "
+                                f"| TP `${params.tp_price:,.2f}`\n"
+                                f"Score `{best.rank_reason}`"
+                            )
+                            _tg_approved = telegram_bot.request_approval(
+                                best.symbol, _tg_detail,
+                                timeout=getattr(config, "MANUAL_APPROVAL_TIMEOUT", 300),
+                            )
+                            signal.alarm(max(90, 30 * len(symbols)))
+
+                        if not _tg_approved:
+                            logger.log_info(f"BUY trade rejected via Telegram: {best.symbol}")
+                            success = False
+                        else:
+                            success = engine.execute_buy(
+                                params,
+                                regime=f"{best.trend}+{best.vol}",
+                                adx=best.adx,
+                                atr_pct=best.atr_pct,
+                                score_pct=best.consensus.ratio * 100.0 if best.consensus else 0.0,
+                                balance=balance,
+                            )
+                            if success and getattr(config, "ENABLE_TELEGRAM_BOT", False):
+                                try:
+                                    _pos = engine.position
+                                    if _pos:
+                                        from telegram_charts import generate_trade_chart
+                                        _chart = generate_trade_chart(
+                                            best.symbol, client,
+                                            _pos.fill_price, _pos.stop_price, _pos.tp_price,
+                                        )
+                                        if _chart:
+                                            telegram_bot.send_photo(_chart,
+                                                caption=f"*{best.symbol}* BUY opened @ `${_pos.fill_price:,.2f}`")
+                                        if getattr(config, "ENABLE_TELEGRAM_VOICE_ALERTS", False):
+                                            from telegram_voice import trade_opened_voice
+                                            _voice = trade_opened_voice(
+                                                best.symbol, "BUY",
+                                                _pos.fill_price, _pos.stop_price, _pos.tp_price,
+                                            )
+                                            if _voice:
+                                                telegram_bot.send_voice(_voice)
+                                except Exception as _tg_exc:
+                                    logger.log_warning(f"TG trade chart send failed: {_tg_exc}")
                         if not success:
                             logger.log_warning(f"Order failed for {best.symbol} — staying flat.")
 
@@ -470,6 +558,59 @@ def live(client: Client, data_client: Client | None = None) -> None:
                     if _last_weekly_report != week_str and now_utc.weekday() == 6:
                         _send_performance_report(open_count, balance, symbols, "Weekly")
                         _last_weekly_report = week_str
+
+                # ── Telegram periodic tasks (all non-raising) ─────────────────
+                if getattr(config, "ENABLE_TELEGRAM_BOT", False):
+                    # Hourly market summary
+                    _summary_interval = getattr(config, "TELEGRAM_SUMMARY_INTERVAL_HOURS", 1)
+                    if _summary_interval > 0 and now_utc.hour != _last_summary_hour:
+                        if now_utc.hour % _summary_interval == 0:
+                            telegram_bot.send_market_summary(results)
+                            _last_summary_hour = now_utc.hour
+
+                    # Risk alerts (1-hour cooldown internally)
+                    telegram_bot.check_risk_alerts(client)
+
+                    # Whale alerts from scan results
+                    telegram_bot.check_whale_alerts(results)
+
+                    # Pinned mini-dashboard (every 5 minutes by wall clock)
+                    _now_mono = time.monotonic()
+                    if _now_mono - _last_pinned_update >= 300:
+                        try:
+                            _paused_str = ("PAUSED" if pause_manager.is_paused()
+                                           else "ACTIVE")
+                            _open_syms = [s for s, e in engines.items()
+                                          if e.has_open_position()]
+                            _pinned_text = (
+                                f"*BTC Bot* | {now_utc.strftime('%H:%M UTC')}\n"
+                                f"Mode: `{'TESTNET' if config.TESTNET else 'LIVE'}`\n"
+                                f"Status: `{_paused_str}`\n"
+                                f"Balance: `${balance:,.2f}`\n"
+                                f"Open: `{', '.join(_open_syms) or 'none'}`\n"
+                                f"Today PnL: `${performance.daily_pnl(now_utc.strftime('%Y-%m-%d')):+.4f}`"
+                            )
+                            telegram_bot.update_pinned(_pinned_text)
+                        except Exception as _pin_exc:
+                            logger.log_warning(f"TG pinned update failed: {_pin_exc}")
+                        _last_pinned_update = _now_mono
+
+                    # Daily PDF report
+                    if (getattr(config, "ENABLE_TELEGRAM_PDF_REPORT", False)
+                            and now_utc.hour == config.REPORT_HOUR_UTC
+                            and _last_daily_report == now_utc.strftime("%Y-%m-%d")):
+                        try:
+                            from telegram_reports import generate_daily_pdf
+                            _pdf = generate_daily_pdf()
+                            if _pdf:
+                                _pdf_date = now_utc.strftime("%Y-%m-%d")
+                                telegram_bot.send_document(
+                                    _pdf,
+                                    filename=f"btcbot_report_{_pdf_date}.pdf",
+                                    caption=f"*Daily Report* — {_pdf_date}",
+                                )
+                        except Exception as _pdf_exc:
+                            logger.log_warning(f"TG PDF report failed: {_pdf_exc}")
 
             finally:
                 signal.alarm(0)

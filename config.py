@@ -250,6 +250,27 @@ ENABLE_TELEGRAM_ALERTS: bool = _bool("ENABLE_TELEGRAM_ALERTS", False)
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# ── Telegram command bot (operations console) ─────────────────────────────────
+# Set ENABLE_TELEGRAM_BOT=true in .env to activate the background polling daemon.
+ENABLE_TELEGRAM_BOT: bool = _bool("ENABLE_TELEGRAM_BOT", False)
+
+# Trade approval mode — bot sends APPROVE/REJECT before every entry.
+# Requires ENABLE_TELEGRAM_BOT=true.  Times out (auto-reject) after N seconds.
+MANUAL_APPROVAL_MODE: bool = _bool("MANUAL_APPROVAL_MODE", False)
+MANUAL_APPROVAL_TIMEOUT: int = _int("MANUAL_APPROVAL_TIMEOUT", 300)
+
+# /panic command: if true, also writes TESTNET=true to .env (requires bot restart)
+PANIC_SWITCH_ENABLE_TESTNET: bool = _bool("PANIC_SWITCH_ENABLE_TESTNET", False)
+
+# Voice alerts via gTTS (requires: pip install gtts)
+ENABLE_TELEGRAM_VOICE_ALERTS: bool = _bool("ENABLE_TELEGRAM_VOICE_ALERTS", False)
+
+# Daily PDF report — sent at REPORT_HOUR_UTC if ENABLE_TELEGRAM_PDF_REPORT=true
+ENABLE_TELEGRAM_PDF_REPORT: bool = _bool("ENABLE_TELEGRAM_PDF_REPORT", False)
+
+# Hourly market summary interval (hours, 0 = disabled)
+TELEGRAM_SUMMARY_INTERVAL_HOURS: int = _int("TELEGRAM_SUMMARY_INTERVAL_HOURS", 1)
+
 # ── Multi-pair scanner ────────────────────────────────────────────────────────
 _SYMBOLS_RAW: str = os.getenv("SYMBOLS", "")
 SYMBOLS: list[str] = (
