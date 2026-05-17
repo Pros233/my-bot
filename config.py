@@ -250,6 +250,47 @@ ENABLE_TELEGRAM_ALERTS: bool = _bool("ENABLE_TELEGRAM_ALERTS", False)
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# ── Trade quality filter engine ──────────────────────────────────────────────
+# Master switch — set false to bypass all filters (not recommended in LIVE)
+ENABLE_TRADE_FILTERS: bool = _bool("ENABLE_TRADE_FILTERS", True)
+
+# A. BTC trend alignment — reject alt longs if BTC strongly bearish
+BTC_ALIGNMENT_FILTER: bool = _bool("BTC_ALIGNMENT_FILTER", True)
+
+# B. Volume quality — reject low-volume or fake-spike setups
+VOLUME_QUALITY_FILTER: bool = _bool("VOLUME_QUALITY_FILTER", True)
+VOLUME_QUALITY_MIN_RATIO: float = _float("VOLUME_QUALITY_MIN_RATIO", 0.5)
+
+# C. Candle extension — reject entries after parabolic candles
+CANDLE_EXTENSION_FILTER: bool = _bool("CANDLE_EXTENSION_FILTER", True)
+CANDLE_EXTENSION_ATR_MULTIPLE: float = _float("CANDLE_EXTENSION_ATR_MULTIPLE", 2.5)
+
+# D. Spread filter — reject if bid/ask spread too wide
+SPREAD_FILTER: bool = _bool("SPREAD_FILTER", True)
+MAX_SPREAD_BPS: float = _float("MAX_SPREAD_BPS", 10.0)   # basis points
+
+# E. Volatility compression / breakout filter
+VOLATILITY_COMPRESSION_FILTER: bool = _bool("VOLATILITY_COMPRESSION_FILTER", True)
+
+# F. Session filter — grade penalty for low-quality sessions (no hard block by default)
+SESSION_FILTER_ENABLED: bool = _bool("SESSION_FILTER_ENABLED", True)
+
+# G. News risk filter — block entries near macro events
+NEWS_RISK_FILTER: bool = _bool("NEWS_RISK_FILTER", True)
+
+# H. Symbol cooldown — candles to wait after a stop-loss (1 candle = 1H)
+SYMBOL_COOLDOWN_CANDLES: int = _int("SYMBOL_COOLDOWN_CANDLES", 3)
+
+# ── Trade grading ─────────────────────────────────────────────────────────────
+# Minimum grade to execute a trade. Options: A+ A B C
+# Default: A → only A+ and A grades execute.
+MIN_TRADE_GRADE: str = os.getenv("MIN_TRADE_GRADE", "A").strip()
+if MIN_TRADE_GRADE not in ("A+", "A", "B", "C"):
+    MIN_TRADE_GRADE = "A"
+
+# Adaptive filters: tighten grade after drawdowns, relax after stable performance
+ENABLE_ADAPTIVE_FILTERS: bool = _bool("ENABLE_ADAPTIVE_FILTERS", False)
+
 # ── Telegram command bot (operations console) ─────────────────────────────────
 # Set ENABLE_TELEGRAM_BOT=true in .env to activate the background polling daemon.
 ENABLE_TELEGRAM_BOT: bool = _bool("ENABLE_TELEGRAM_BOT", False)

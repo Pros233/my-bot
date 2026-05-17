@@ -41,6 +41,8 @@ import logger
 import dashboard
 import backtest as bt
 import telegram_bot
+import trade_filters
+import trade_grader
 from executor import ExecutionEngine
 from strategies.range_mr import get_signal_2h, resample_1h_to_2h
 
@@ -326,9 +328,14 @@ def live(client: Client, data_client: Client | None = None) -> None:
                     if engine.has_open_position():
                         r = results[sym]
                         df_sym = r.df if not r.df.empty else None
+                        _pos_before_close = engine.position   # save before check
                         exit_price = engine.check_position(df_sym)
                         if exit_price is not None:
                             logger.log_info(f"{sym} position closed at {exit_price:.2f}")
+                            # Record stop-loss for cooldown filter
+                            if (_pos_before_close and
+                                    exit_price <= _pos_before_close.stop_price * 1.002):
+                                trade_filters.record_stop_loss(sym)
 
                 balance = get_usdt_balance(client)
                 pause_manager.update_balance(balance)
@@ -390,6 +397,47 @@ def live(client: Client, data_client: Client | None = None) -> None:
                     )
 
                     engine = engines[best.symbol]
+
+                    # ── Trade quality filters + grader ────────────────────────
+                    try:
+                        _filter_results = trade_filters.run_all(
+                            best.symbol, best.df, now_utc, results, client
+                        )
+                        _grade, _grade_score, _grade_reasons = trade_grader.grade_trade(
+                            symbol=best.symbol,
+                            trend=best.trend,
+                            vol=best.vol,
+                            adx=best.adx,
+                            atr_pct=best.atr_pct,
+                            score_pct=best.consensus.ratio * 100.0 if best.consensus else 0.0,
+                            now_utc=now_utc,
+                            filter_results=_filter_results,
+                        )
+                        _session_str = trade_filters.session_from_results(_filter_results)
+                        _eff_min_grade = trade_grader.adaptive_min_grade(
+                            consecutive_losses=performance.consecutive_losses(),
+                            daily_loss_pct=(performance.daily_pnl(
+                                now_utc.strftime("%Y-%m-%d")) / balance * 100
+                            ) if balance > 0 else 0.0,
+                            consecutive_wins=performance.consecutive_wins(),
+                            weekly_pnl=performance.weekly_pnl(
+                                f"{now_utc.isocalendar()[0]}-W{now_utc.isocalendar()[1]:02d}"
+                            ),
+                        )
+                        _skip_trade = not trade_grader.grade_passes_minimum(_grade)
+                        if _skip_trade:
+                            logger.log_info(
+                                f"SKIP | {best.symbol} | grade={_grade} "
+                                f"(score={_grade_score}) below min={_eff_min_grade} | "
+                                + " | ".join(_grade_reasons[:3])
+                            )
+                    except Exception as _flt_exc:
+                        # Fail-safe: filter/grade crash must never block trading
+                        logger.log_warning(f"filter/grade pipeline error (non-critical): {_flt_exc}")
+                        _grade, _grade_score, _session_str = "A", 0, "Unknown"
+                        _skip_trade = False
+                        _filter_results = []
+
                     if best.decision == "RMR_LONG":
                         rmr = best.rmr
                         rmr_params = risk.TradeParams(
@@ -430,8 +478,9 @@ def live(client: Client, data_client: Client | None = None) -> None:
                             )
                             signal.alarm(max(90, 30 * len(symbols)))
 
-                        if not _tg_approved:
-                            logger.log_info(f"RMR trade rejected via Telegram: {best.symbol}")
+                        if _skip_trade or not _tg_approved:
+                            if not _tg_approved:
+                                logger.log_info(f"RMR trade rejected via Telegram: {best.symbol}")
                             success = False
                         else:
                             success = engine.execute_buy(
@@ -443,6 +492,9 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                 score_pct=best.consensus.ratio * 100.0 if best.consensus else 0.0,
                                 balance=balance,
                             )
+                            if success and engine.position:
+                                engine.position.session     = _session_str
+                                engine.position.trade_grade = _grade
                             if success and getattr(config, "ENABLE_TELEGRAM_BOT", False):
                                 try:
                                     _pos = engine.position
@@ -454,7 +506,7 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                         )
                                         if _chart:
                                             telegram_bot.send_photo(_chart,
-                                                caption=f"*{best.symbol}* RMR LONG opened @ `${_pos.fill_price:,.2f}`")
+                                                caption=f"*{best.symbol}* RMR LONG [{_grade}] @ `${_pos.fill_price:,.2f}`")
                                         if getattr(config, "ENABLE_TELEGRAM_VOICE_ALERTS", False):
                                             from telegram_voice import trade_opened_voice
                                             _voice = trade_opened_voice(
@@ -488,8 +540,9 @@ def live(client: Client, data_client: Client | None = None) -> None:
                             )
                             signal.alarm(max(90, 30 * len(symbols)))
 
-                        if not _tg_approved:
-                            logger.log_info(f"BUY trade rejected via Telegram: {best.symbol}")
+                        if _skip_trade or not _tg_approved:
+                            if not _tg_approved:
+                                logger.log_info(f"BUY trade rejected via Telegram: {best.symbol}")
                             success = False
                         else:
                             success = engine.execute_buy(
@@ -500,6 +553,9 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                 score_pct=best.consensus.ratio * 100.0 if best.consensus else 0.0,
                                 balance=balance,
                             )
+                            if success and engine.position:
+                                engine.position.session     = _session_str
+                                engine.position.trade_grade = _grade
                             if success and getattr(config, "ENABLE_TELEGRAM_BOT", False):
                                 try:
                                     _pos = engine.position

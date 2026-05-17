@@ -46,7 +46,9 @@ CREATE TABLE IF NOT EXISTS trades (
     atr_pct           REAL    NOT NULL DEFAULT 0.0,
     score_pct         REAL    NOT NULL DEFAULT 0.0,
     testnet           INTEGER NOT NULL DEFAULT 1,
-    created_at        TEXT    NOT NULL
+    created_at        TEXT    NOT NULL,
+    session           TEXT    NOT NULL DEFAULT '',
+    trade_grade       TEXT    NOT NULL DEFAULT ''
 )
 """
 
@@ -55,16 +57,26 @@ INSERT INTO trades (
     opened_at_utc, closed_at_utc, symbol, strategy, side,
     entry_price, exit_price, stop_price, tp_price, quantity,
     pnl_usdt, pnl_pct, fees_estimated, duration_minutes, close_reason,
-    regime, adx, atr_pct, score_pct, testnet, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    regime, adx, atr_pct, score_pct, testnet, created_at,
+    session, trade_grade
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
 def _ensure_db() -> None:
-    """Create trades table if it doesn't exist. Safe to call on every startup."""
+    """Create trades table and run column migrations. Safe to call on every startup."""
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(_CREATE_TABLE)
+            # Migrate: add new columns if missing (ALTER TABLE ignores IF EXISTS)
+            for col, definition in [
+                ("session",     "TEXT NOT NULL DEFAULT ''"),
+                ("trade_grade", "TEXT NOT NULL DEFAULT ''"),
+            ]:
+                try:
+                    conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {definition}")
+                except sqlite3.OperationalError:
+                    pass  # column already exists
             conn.commit()
     except Exception as exc:
         logger.log_warning(f"trade_journal: could not initialise DB: {exc}")
@@ -75,6 +87,8 @@ def record_trade(
     position: "OpenPosition",
     exit_price: float,
     close_reason: str,
+    session: str = "",
+    trade_grade: str = "",
 ) -> None:
     """
     Write a completed trade to trades.db.
@@ -118,6 +132,8 @@ def record_trade(
                 position.score_pct,
                 1 if config.TESTNET else 0,
                 now,
+                session,
+                trade_grade,
             ))
             conn.commit()
 

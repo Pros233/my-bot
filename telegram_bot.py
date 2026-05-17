@@ -542,6 +542,24 @@ def _handle_command(cmd: str, args: list) -> None:
     elif cmd == "panic":
         _send_text(tc.cmd_panic(_client, _engines))
 
+    elif cmd == "best":
+        _send_text(tc.cmd_best())
+
+    elif cmd == "worst":
+        _send_text(tc.cmd_worst())
+
+    elif cmd == "conditions":
+        _send_text(tc.cmd_conditions())
+
+    elif cmd == "sessions":
+        _send_text(tc.cmd_sessions())
+
+    elif cmd == "regimes":
+        _send_text(tc.cmd_regimes())
+
+    elif cmd == "grades":
+        _send_text(tc.cmd_grades())
+
     elif cmd == "help":
         _send_text(tc.cmd_help())
 

@@ -41,6 +41,12 @@ try:
 except ImportError as exc:
     sys.exit(f"[dashboard] Cannot import bot modules: {exc}")
 
+try:
+    import performance_advanced as _perf_adv
+    _PERF_ADV_OK = True
+except ImportError:
+    _PERF_ADV_OK = False
+
 # ── Optional: pandas + regime (for heatmap) ───────────────────────────────────
 try:
     import pandas as pd
@@ -1567,6 +1573,34 @@ def api_summary():
         with _cache_lock:
             _cache.pop("summary", None)
     return jsonify(_cached("summary", _generate_summary, 3600.0) or {})
+
+
+@app.route("/api/analytics")
+@login_required
+def api_analytics():
+    """Advanced analytics by session/regime/hour/weekday/score/ADX/ATR/grade."""
+    if not _PERF_ADV_OK:
+        return jsonify({"error": "performance_advanced not available"})
+
+    def _build():
+        return {
+            "by_session":  _perf_adv.pnl_by_session(),
+            "by_regime":   _perf_adv.pnl_by_regime(),
+            "by_hour":     _perf_adv.pnl_by_hour(),
+            "by_weekday":  _perf_adv.pnl_by_weekday(),
+            "by_score":    _perf_adv.pnl_by_score_bucket(),
+            "by_adx":      _perf_adv.pnl_by_adx_bucket(),
+            "by_atr":      _perf_adv.pnl_by_atr_bucket(),
+            "by_grade":    _perf_adv.pnl_by_grade(),
+            "by_symbol":   _perf_adv.pnl_by_symbol(),
+            "by_strategy": _perf_adv.pnl_by_strategy(),
+            "best":        _perf_adv.best_market_conditions(top_n=3),
+            "worst":       _perf_adv.worst_market_conditions(top_n=3),
+            "grade_dist":  _perf_adv.grade_distribution(),
+            "summary":     _perf_adv.summary_report(),
+        }
+
+    return jsonify(_cached("analytics", _build, 120.0) or {})
 
 
 @app.route("/api/events")

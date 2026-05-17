@@ -59,6 +59,8 @@ class OpenPosition:
     entry_balance: float = 0.0
     fees_estimated: float = 0.0
     opened_at_utc: str = ""
+    session: str = ""        # trading session at entry (set by main.py after execute_buy)
+    trade_grade: str = ""    # A+/A/B/C (set by main.py after execute_buy)
 
 
 # ── Retry helper ──────────────────────────────────────────────────────────────
@@ -562,6 +564,8 @@ class ExecutionEngine:
                     position=self.position,
                     exit_price=exit_price,
                     close_reason=close_type,
+                    session=self.position.session,
+                    trade_grade=self.position.trade_grade,
                 )
             except Exception as exc:
                 logger.log_warning(f"trade_journal.record_trade failed (non-critical): {exc}")

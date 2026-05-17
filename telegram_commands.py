@@ -397,6 +397,132 @@ def cmd_panic(client, engines: dict) -> str:
         return f"⚠ /panic error: `{exc}`"
 
 
+# ── Analytics helpers ─────────────────────────────────────────────────────────
+
+def _fmt_analytics_table(rows: list, label: str, top_n: int = 5) -> str:
+    """Format a list of analytics dicts into a compact Markdown table."""
+    if not rows:
+        return f"*{label}*: no data yet"
+    lines = [f"*{label}*"]
+    for r in rows[:top_n]:
+        cat = r.get("category", "?")
+        n   = r.get("trades", 0)
+        wr  = r.get("win_rate", 0)
+        avg = r.get("avg_pnl", 0)
+        tot = r.get("total_pnl", 0)
+        lines.append(
+            f"  `{cat}` — {n}T | WR {wr:.0f}% | avg `{avg:+.4f}` | tot `{tot:+.4f}`"
+        )
+    return "\n".join(lines)
+
+
+# ── /best ──────────────────────────────────────────────────────────────────────
+
+def cmd_best() -> str:
+    try:
+        import performance_advanced as pa
+        best = pa.best_market_conditions(top_n=2)
+        lines = [f"*Best Market Conditions* | {_mode()}"]
+        for dim, rows in best.items():
+            if rows:
+                r = rows[0]
+                lines.append(
+                    f"  Best {dim}: `{r['category']}` "
+                    f"(WR={r['win_rate']:.0f}%, avg={r['avg_pnl']:+.4f})"
+                )
+        if len(lines) == 1:
+            lines.append("_No trade data yet_")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /best error: `{exc}`"
+
+
+# ── /worst ─────────────────────────────────────────────────────────────────────
+
+def cmd_worst() -> str:
+    try:
+        import performance_advanced as pa
+        worst = pa.worst_market_conditions(top_n=2)
+        lines = [f"*Worst Market Conditions* | {_mode()}"]
+        for dim, rows in worst.items():
+            if rows:
+                r = rows[0]
+                lines.append(
+                    f"  Worst {dim}: `{r['category']}` "
+                    f"(WR={r['win_rate']:.0f}%, avg={r['avg_pnl']:+.4f})"
+                )
+        if len(lines) == 1:
+            lines.append("_No trade data yet_")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /worst error: `{exc}`"
+
+
+# ── /conditions ────────────────────────────────────────────────────────────────
+
+def cmd_conditions() -> str:
+    try:
+        import performance_advanced as pa
+        s = pa.summary_report()
+        if not s:
+            return "*Conditions*: no trade data yet"
+        lines = [f"*Market Condition Analytics* | {_mode()}", ""]
+        lines.append(f"Best session:  `{s.get('best_session', 'N/A')}`")
+        lines.append(f"Best regime:   `{s.get('best_regime', 'N/A')}`")
+        lines.append(f"Best hour:     `{s.get('best_hour', 'N/A')}`")
+        lines.append(f"Best weekday:  `{s.get('best_weekday', 'N/A')}`")
+        lines.append(f"Best grade:    `{s.get('best_grade', 'N/A')}`")
+        lines.append("")
+        lines.append(f"Worst session: `{s.get('worst_session', 'N/A')}`")
+        lines.append(f"Worst regime:  `{s.get('worst_regime', 'N/A')}`")
+        lines.append(f"Worst hour:    `{s.get('worst_hour', 'N/A')}`")
+        lines.append(f"Worst weekday: `{s.get('worst_weekday', 'N/A')}`")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /conditions error: `{exc}`"
+
+
+# ── /sessions ──────────────────────────────────────────────────────────────────
+
+def cmd_sessions() -> str:
+    try:
+        import performance_advanced as pa
+        rows = pa.pnl_by_session()
+        return _fmt_analytics_table(rows, "PnL by Session")
+    except Exception as exc:
+        return f"⚠ /sessions error: `{exc}`"
+
+
+# ── /regimes ───────────────────────────────────────────────────────────────────
+
+def cmd_regimes() -> str:
+    try:
+        import performance_advanced as pa
+        rows = pa.pnl_by_regime()
+        return _fmt_analytics_table(rows, "PnL by Regime")
+    except Exception as exc:
+        return f"⚠ /regimes error: `{exc}`"
+
+
+# ── /grades ────────────────────────────────────────────────────────────────────
+
+def cmd_grades() -> str:
+    try:
+        import performance_advanced as pa
+        rows = pa.pnl_by_grade()
+        dist = pa.grade_distribution()
+        lines = [f"*Trade Grade Distribution* | {_mode()}"]
+        for grade in ("A+", "A", "B", "C", "ungraded"):
+            count = dist.get(grade, 0)
+            if count:
+                lines.append(f"  `{grade}`: {count} trades")
+        lines.append("")
+        lines.append(_fmt_analytics_table(rows, "PnL by Grade"))
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /grades error: `{exc}`"
+
+
 # ── /help ─────────────────────────────────────────────────────────────────────
 
 def cmd_help() -> str:
@@ -418,6 +544,14 @@ def cmd_help() -> str:
         "/unpause — Resume trading\n"
         f"/chart <sym> — 48H price chart (`{symbols_str}`)\n"
         "/panic — Emergency: cancel orders + pause + optional TESTNET\n"
+        "\n"
+        "*Analytics*\n"
+        "/best — Best performing conditions (session/regime/hour)\n"
+        "/worst — Worst performing conditions\n"
+        "/conditions — Full best/worst summary\n"
+        "/sessions — PnL breakdown by session\n"
+        "/regimes — PnL breakdown by regime\n"
+        "/grades — Trade grade distribution\n"
         "\n"
         "_All commands restricted to authorised chat ID only._"
     )
