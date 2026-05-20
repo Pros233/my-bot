@@ -341,6 +341,29 @@ ENABLE_CONFIDENCE_SCORE: bool = _bool("ENABLE_CONFIDENCE_SCORE", False)
 # Live vs shadow comparative analytics: persist shadow trades to DB
 ENABLE_SHADOW_ANALYTICS: bool = _bool("ENABLE_SHADOW_ANALYTICS", False)
 
+# ── Session 6: Advanced strategy layer ───────────────────────────────────────
+
+# Intraday scalp momentum engine (07:00-20:00 UTC, tight 1.2R TP)
+ENABLE_INTRADAY_SCALP: bool = _bool("ENABLE_INTRADAY_SCALP", False)
+
+# Grid trading tracker — virtual grid in ranging zones (shadow-only by default)
+ENABLE_GRID_ENGINE: bool    = _bool("ENABLE_GRID_ENGINE", False)
+N_GRID_LEVELS: int          = _int("N_GRID_LEVELS", 8)
+
+# Funding rate arbitrage scanner (watch-only, never auto-trades)
+ENABLE_FUNDING_ARB: bool    = _bool("ENABLE_FUNDING_ARB", False)
+FUNDING_ARB_ALERT_PCT: float = _float("FUNDING_ARB_ALERT_PCT", 0.03)  # alert threshold %
+
+# DeFi ecosystem signals from DeFiLlama
+ENABLE_DEFI_SIGNALS: bool   = _bool("ENABLE_DEFI_SIGNALS", False)
+
+# Social sentiment (CoinGecko trending + Fear/Greed index)
+ENABLE_SOCIAL_SENTIMENT: bool = _bool("ENABLE_SOCIAL_SENTIMENT", False)
+
+# Hourly Telegram summary for trending coins + funding arb opportunities
+ENABLE_HOURLY_INTEL_SUMMARY: bool = _bool("ENABLE_HOURLY_INTEL_SUMMARY", False)
+HOURLY_INTEL_INTERVAL_HOURS: int  = _int("HOURLY_INTEL_INTERVAL_HOURS", 1)
+
 # ── Telegram command bot (operations console) ─────────────────────────────────
 # Set ENABLE_TELEGRAM_BOT=true in .env to activate the background polling daemon.
 ENABLE_TELEGRAM_BOT: bool = _bool("ENABLE_TELEGRAM_BOT", False)

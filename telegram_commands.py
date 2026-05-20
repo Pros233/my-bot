@@ -1482,5 +1482,260 @@ def cmd_help() -> str:
         "/weekly — Weekly intelligence report (last 7 days)\n"
         "/memory — Learning memory: strongest/weakest engine×regime×session\n"
         "\n"
+        "*Session 6 — Advanced Strategies*\n"
+        "/scalp — Intraday scalp engine status and recent signals\n"
+        "/grid — Virtual grid tracker: levels, hits, virtual PnL\n"
+        "/funding — Funding rate arb: extreme rates + market bias\n"
+        "/defi — DeFi ecosystem: TVL momentum + top yield pools\n"
+        "/social — Social sentiment: trending coins + Fear/Greed index\n"
+        "/intel — Combined hourly intel: trending coins + arb opportunities\n"
+        "\n"
         "_All commands restricted to authorised chat ID only._"
     )
+
+
+# ── /scalp ────────────────────────────────────────────────────────────────────
+
+def cmd_scalp() -> str:
+    try:
+        import config as _cfg
+        lines = ["*Intraday Scalp Engine*"]
+        enabled = getattr(_cfg, "ENABLE_INTRADAY_SCALP", False)
+        lines.append(f"Status: `{'ENABLED' if enabled else 'DISABLED'}`")
+        if not enabled:
+            lines.append("_Set ENABLE\\_INTRADAY\\_SCALP=true in .env to activate_")
+            lines.append("\nEngine: `INTRADAY_SCALP`")
+            lines.append("Session: `07:00-20:00 UTC`")
+            lines.append("TP/SL ratio: `1.2R` (scalp-tight)")
+            lines.append("Conditions: EMA9>EMA21 | RSI 45-62 | 3-bar close accel | ADX<35")
+        else:
+            lines.append("\nEngine: `INTRADAY_SCALP`")
+            lines.append("Session gate: `07:00-20:00 UTC`")
+            lines.append("TP ratio: `1.2R` | Stop: `EMA9 - 0.3×ATR`")
+            lines.append("Rank boost: `+45` when fired")
+            lines.append("\n_Signals appear in /status and /engines when active_")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"*Scalp*: error — `{exc}`"
+
+
+# ── /grid ─────────────────────────────────────────────────────────────────────
+
+def cmd_grid() -> str:
+    try:
+        import grid_engine as _ge
+        import config as _cfg
+        enabled = getattr(_cfg, "ENABLE_GRID_ENGINE", False)
+        lines = ["*Virtual Grid Tracker*"]
+        lines.append(f"Status: `{'ENABLED' if enabled else 'DISABLED'}`")
+        lines.append(f"Mode: `SHADOW (no live orders)`")
+        if not enabled:
+            lines.append("_Set ENABLE\\_GRID\\_ENGINE=true in .env to activate_")
+            return "\n".join(lines)
+
+        all_grids = _ge.get_all_grid_status()
+        for sym, gs in all_grids.items():
+            if gs.get("status") == "inactive":
+                lines.append(f"\n`{sym}`: not initialised yet")
+                continue
+            lines.append(f"\n`{sym}`")
+            lines.append(f"  Center: `${gs.get('center_price',0):,.2f}` | ATR: `{gs.get('atr',0):.2f}`")
+            lines.append(f"  Levels: `{gs.get('open_levels',0)} open` / `{gs.get('total_levels',0)} total`")
+            lines.append(f"  Open positions: `{gs.get('open_positions',0)}`")
+            lines.append(f"  Hits: `{gs.get('hits',0)}` | Virtual PnL: `{gs.get('total_virtual_pnl',0):+.4f}`")
+            next_buy = gs.get("next_buy_level", 0)
+            if next_buy:
+                lines.append(f"  Next buy level: `${next_buy:,.2f}`")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"*Grid*: error — `{exc}`"
+
+
+# ── /funding ──────────────────────────────────────────────────────────────────
+
+def cmd_funding() -> str:
+    try:
+        import funding_arb as _fa
+        import config as _cfg
+        enabled = getattr(_cfg, "ENABLE_FUNDING_ARB", False)
+        lines = ["*Funding Rate Arbitrage*"]
+        lines.append(f"Status: `{'ENABLED (watch-only)' if enabled else 'DISABLED'}`")
+        lines.append("`AUTO_TRADE: locked OFF`")
+
+        summary = _fa.get_funding_summary()
+        bias    = summary.get("market_funding_bias", "neutral")
+        avg     = summary.get("avg_rate_pct", 0.0)
+        extreme = summary.get("extreme_count", 0)
+        age     = summary.get("cache_age_s", 0)
+
+        lines.append(f"\nMarket bias: `{bias.replace('_',' ').upper()}`")
+        lines.append(f"Avg rate: `{avg:+.5f}%` | Extreme signals: `{extreme}`")
+        lines.append(f"Data age: `{int(age)}s ago`")
+
+        signals = summary.get("arb_signals", [])
+        if signals:
+            lines.append("\n*Top Arb Opportunities*")
+            for s in signals[:5]:
+                lines.append(
+                    f"`{s['symbol']}` [{s['strength']}] {s['direction'].replace('_',' ')}\n"
+                    f"  Rate `{s['rate_pct']:+.4f}%` | Ann `{s['annualized_pct']:+.1f}%`\n"
+                    f"  Next funding: `{s['next_funding']}`"
+                )
+        else:
+            lines.append("\n_No notable arb opportunities right now_")
+
+        lines.append(f"\n*All Rates*")
+        rates = sorted(summary.get("rates", {}).values(),
+                       key=lambda x: abs(x.get("rate_pct", 0)), reverse=True)
+        for r in rates[:8]:
+            lines.append(f"`{r['symbol']}`: `{r['rate_pct']:+.4f}%`")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"*Funding*: error — `{exc}`"
+
+
+# ── /defi ─────────────────────────────────────────────────────────────────────
+
+def cmd_defi() -> str:
+    try:
+        import defi_signals as _ds
+        import config as _cfg
+        enabled = getattr(_cfg, "ENABLE_DEFI_SIGNALS", False)
+        lines = ["*DeFi Ecosystem Signals*"]
+        lines.append(f"Status: `{'ENABLED' if enabled else 'DISABLED'}`")
+        lines.append("Source: `DeFiLlama (free API)`")
+
+        summary = _ds.get_defi_summary()
+        age     = summary.get("cache_age_s", 0)
+        env     = summary.get("yield_environment", "unknown")
+        avg_apy = summary.get("avg_top10_apy", 0.0)
+
+        lines.append(f"Yield env: `{env.replace('_',' ').upper()}`")
+        lines.append(f"Avg top-10 APY: `{avg_apy:.1f}%`")
+        lines.append(f"Data age: `{int(age)}s ago`")
+
+        chains = summary.get("chains", {})
+        if chains:
+            lines.append("\n*Chain TVL Momentum (24h)*")
+            for name, data in sorted(chains.items(), key=lambda x: x[1].get("change_1d", 0), reverse=True):
+                chg   = data.get("change_1d", 0.0)
+                tvl   = data.get("tvl_usd", 0.0)
+                health= data.get("health", "stable")
+                icon  = "+" if chg > 0 else ""
+                lines.append(f"`{name}` [{health}]: `{icon}{chg:.2f}%` TVL `${tvl/1e9:.2f}B`")
+
+        pools = summary.get("top_yield_pools", [])
+        if pools:
+            lines.append("\n*Top Yield Pools (by TVL)*")
+            for p in pools[:5]:
+                lines.append(
+                    f"`{p.get('project','')}` [{p.get('chain','')}]: "
+                    f"`{p.get('apy',0):.1f}% APY` | TVL `${p.get('tvl_usd',0)/1e6:.0f}M`"
+                )
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"*DeFi*: error — `{exc}`"
+
+
+# ── /social ───────────────────────────────────────────────────────────────────
+
+def cmd_social() -> str:
+    try:
+        import social_sentiment as _ss
+        import config as _cfg
+        enabled = getattr(_cfg, "ENABLE_SOCIAL_SENTIMENT", False)
+        lines = ["*Social Sentiment*"]
+        lines.append(f"Status: `{'ENABLED' if enabled else 'DISABLED'}`")
+        lines.append("Sources: `CoinGecko Trending + Fear/Greed Index`")
+
+        summary = _ss.get_social_summary()
+
+        fng   = summary.get("fear_greed", {})
+        fng_v = fng.get("value", 50)
+        fng_l = fng.get("label", "Neutral")
+        lines.append(f"\n*Fear & Greed Index*: `{fng_v}/100` — `{fng_l}`")
+
+        # Progress bar
+        bars = int(fng_v / 10)
+        bar  = "█" * bars + "░" * (10 - bars)
+        lines.append(f"`[{bar}]`")
+
+        glb = summary.get("global_market", {})
+        if glb:
+            mkt_chg = glb.get("market_cap_change_24h", 0.0)
+            btc_dom = glb.get("btc_dominance", 0.0)
+            lines.append(f"Market cap 24h: `{mkt_chg:+.2f}%` | BTC dom: `{btc_dom:.1f}%`")
+
+        coins = summary.get("trending_coins", [])
+        if coins:
+            lines.append("\n*Trending Coins (CoinGecko)*")
+            for c in coins:
+                sym  = c.get("symbol", "")
+                name = c.get("name", "")
+                rank = c.get("rank", 9999)
+                usdt = c.get("usdt_sym", "")
+                rank_str = f" (MCap #{rank})" if rank < 500 else ""
+                lines.append(f"• `{sym}` — {name}{rank_str} (`{usdt}`)")
+        else:
+            lines.append("\n_Trending data not yet loaded_")
+
+        signals = summary.get("buy_signals", [])
+        if signals:
+            lines.append(f"\n*Buy Signals*: `{len(signals)}` trending coins meeting criteria")
+            for s in signals[:3]:
+                strength = s.get("strength", "")
+                lines.append(f"• [{strength}] `{s.get('symbol','')}` — {s.get('name','')}")
+        else:
+            lines.append("\n_No buy signals from trending coins right now_")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"*Social*: error — `{exc}`"
+
+
+# ── /intel (combined hourly summary) ──────────────────────────────────────────
+
+def cmd_intel_summary() -> str:
+    """
+    Compact hourly intel summary for auto-posting and /intel command.
+    Combines: trending coins, fear/greed, funding arb highlights.
+    """
+    try:
+        import social_sentiment as _ss
+        import funding_arb as _fa
+        from datetime import datetime, timezone
+
+        now_str = datetime.now(timezone.utc).strftime("%H:%M UTC")
+        lines   = [f"*Hourly Intel* | {now_str}"]
+
+        # Fear & Greed
+        fng   = _ss.get_fear_greed()
+        fng_v = fng.get("value", 50)
+        fng_l = fng.get("label", "Neutral")
+        lines.append(f"Fear/Greed: `{fng_v}/100` {fng_l}")
+
+        # Top 3 trending
+        coins = _ss.get_trending_coins()[:3]
+        if coins:
+            trend_str = " · ".join(c.get("symbol", "") for c in coins)
+            lines.append(f"Trending: `{trend_str}`")
+
+        # Funding arb top signal
+        arb = _fa.get_arb_signals(min_rate_pct=0.02)
+        if arb:
+            top = arb[0]
+            lines.append(
+                f"Top funding: `{top['symbol']}` `{top['rate_pct']:+.4f}%` "
+                f"({top['direction'].replace('_',' ')})"
+            )
+
+        # Buy signals
+        signals = _ss.trending_buy_signals()
+        if signals:
+            sig_str = " · ".join(s.get("symbol", "") for s in signals[:3])
+            lines.append(f"Social signals: `{sig_str}`")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"*Intel*: error — `{exc}`"

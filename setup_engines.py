@@ -381,3 +381,101 @@ def get_mean_reversion_signal(df: pd.DataFrame) -> EngineSignal:
 
     except Exception as exc:
         return _no_signal(engine, f"error: {exc}")
+
+
+# ── Engine E: Intraday scalp momentum ─────────────────────────────────────────
+
+def get_intraday_scalp_signal(
+    df: pd.DataFrame,
+    now_utc: Optional[datetime] = None,
+) -> EngineSignal:
+    """
+    Intraday momentum scalp — active 07:00-20:00 UTC only.
+
+    Targets short-duration momentum bursts with tight TP (1.2R) and fast stop.
+    Designed to capture intraday continuation moves in high-activity sessions.
+
+    Conditions (ALL required):
+    1. UTC hour 07-19 (active intraday window)
+    2. EMA9 > EMA21 (uptrend confirmed)
+    3. RSI 45-62 (momentum zone, not extended or overbought)
+    4. Last 3 consecutive closes each higher than the previous (acceleration)
+    5. Volume >= 1.3x 20-bar average (participation present)
+    6. ADX < 35 (not blow-off, momentum still healthy)
+    7. ATR not in top 10% of 50-bar range (avoid chaotic bars)
+
+    Stop: EMA9 - 0.3xATR  (tight scalp stop)
+    TP:   entry + 1.2xstop_distance (quick profit target)
+    """
+    engine = "INTRADAY_SCALP"
+    try:
+        if now_utc is None:
+            now_utc = datetime.now(timezone.utc)
+
+        if now_utc.hour not in range(7, 20):
+            return _no_signal(engine, f"outside scalp window (hour={now_utc.hour} UTC)")
+
+        if len(df) < 55:
+            return _no_signal(engine, "insufficient data (<55 bars)")
+
+        ema9    = _compute_ema(df, 9)
+        ema21   = _compute_ema(df, 21)
+        atr     = _compute_atr(df, 14)
+        rsi     = _compute_rsi(df, 14)
+        vol_ma  = df["volume"].rolling(20).mean()
+
+        e9      = float(ema9.iloc[-1])
+        e21     = float(ema21.iloc[-1])
+        atr_val = float(atr.iloc[-1])
+        rsi_val = float(rsi.iloc[-1])
+        vol_now = float(df["volume"].iloc[-1])
+        vol_avg = float(vol_ma.iloc[-1])
+        c       = float(df["close"].iloc[-1])
+
+        if e9 <= e21:
+            return _no_signal(engine, f"EMA9={e9:.2f} <= EMA21={e21:.2f}")
+
+        if not (45 <= rsi_val <= 62):
+            return _no_signal(engine, f"RSI={rsi_val:.1f} outside 45-62")
+
+        # Three accelerating closes (index -1 is most recent)
+        closes = [float(df["close"].iloc[-i]) for i in range(1, 5)]
+        if not (closes[0] > closes[1] > closes[2] > closes[3]):
+            return _no_signal(engine, "no 3-bar close acceleration")
+
+        if vol_now < 1.3 * vol_avg:
+            return _no_signal(engine, f"vol={vol_now:.0f} < 1.3x avg={vol_avg:.0f}")
+
+        try:
+            import pandas_ta as _ta  # noqa: F401
+            adx_df  = df.ta.adx(length=config.ADX_PERIOD)
+            adx_val = float(adx_df[f"ADX_{config.ADX_PERIOD}"].iloc[-1])
+        except Exception:
+            adx_val = 20.0
+        if adx_val >= 35:
+            return _no_signal(engine, f"ADX={adx_val:.1f} >= 35 (blow-off risk)")
+
+        atr_p90 = float(atr.iloc[-50:].quantile(0.90))
+        if atr_val >= atr_p90:
+            return _no_signal(engine, f"ATR in top 10% of 50-bar range — chaotic")
+
+        entry     = c * (1 + config.SLIPPAGE)
+        stop      = e9 - 0.3 * atr_val
+        stop_dist = entry - stop
+        if stop_dist <= 0:
+            return _no_signal(engine, "stop_distance <= 0")
+        tp = entry + 1.2 * stop_dist
+
+        return EngineSignal(
+            direction="LONG", engine=engine,
+            entry_price=round(entry, 4), stop_price=round(stop, 4),
+            tp_price=round(tp, 4), stop_distance=round(stop_dist, 4),
+            atr_value=round(atr_val, 4), rank_boost=45.0,
+            reason=(
+                f"Intraday scalp | RSI={rsi_val:.0f} | 3-bar accel"
+                f" | ADX={adx_val:.1f} | vol={vol_now/vol_avg:.1f}x"
+            ),
+        )
+
+    except Exception as exc:
+        return _no_signal(engine, f"error: {exc}")

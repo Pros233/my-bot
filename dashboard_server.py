@@ -933,6 +933,38 @@ tr.clickable:hover td{background:#1c2128;cursor:pointer}
 <div class="stitle">Arbitrage Watch <span class="badge bwatch">WATCH ONLY</span> <span class="stitle-ts" id="arb-ts"></span></div>
 <div class="card" id="arb-container"><div class="nodata cd">Loading arbitrage data&hellip;</div></div>
 
+<!-- S6. Advanced Intel: Social + Funding + DeFi + Grid -->
+<div class="stitle">Advanced Intel <span class="badge bwatch">WATCH ONLY</span> <span class="stitle-ts" id="intel-ts"></span></div>
+<div class="g3" style="margin-bottom:10px">
+  <div class="card">
+    <div class="lbl">Fear &amp; Greed Index</div>
+    <div class="val cy" id="intel-fng-value">—</div>
+    <div class="sub" id="intel-fng-label">—</div>
+    <div style="margin:6px 0;font-size:11px;color:#888">Funding Market Bias</div>
+    <div class="val" id="intel-funding-bias">—</div>
+    <div class="sub" id="intel-funding-avg">—</div>
+  </div>
+  <div class="card">
+    <div class="lbl" style="margin-bottom:6px">Trending Coins (Social)</div>
+    <div id="intel-trending-list"><div class="nodata cd" style="font-size:11px">Loading&hellip;</div></div>
+  </div>
+  <div class="card">
+    <div class="lbl" style="margin-bottom:6px">DeFi Ecosystem</div>
+    <div class="sub" id="intel-yield-env">—</div>
+    <div id="intel-chain-list"><div class="nodata cd" style="font-size:11px">Loading&hellip;</div></div>
+  </div>
+</div>
+<div class="g2" style="margin-bottom:10px">
+  <div class="card">
+    <div class="lbl" style="margin-bottom:6px">Funding Rate Arb Signals <span class="badge bwatch">WATCH ONLY</span></div>
+    <div id="intel-funding-signals"><div class="nodata cd" style="font-size:11px">Loading&hellip;</div></div>
+  </div>
+  <div class="card">
+    <div class="lbl" style="margin-bottom:6px">Virtual Grid Tracker</div>
+    <div id="intel-grid-list"><div class="nodata cd" style="font-size:11px">Loading&hellip;</div></div>
+  </div>
+</div>
+
 <!-- H. Rejection Analytics -->
 <div class="stitle">Why Trades Are Being Rejected <span class="stitle-ts" id="rej-ts"></span></div>
 <div class="g4" id="rej-stats" style="margin-bottom:10px">
@@ -1494,6 +1526,128 @@ async function loadArb() {
   } catch(e) {}
 }
 
+/* ── S6. Advanced Intel: loadAdvancedIntel ── */
+async function loadAdvancedIntel() {
+  try {
+    const r = await fetch('/api/advanced_intel');
+    if (!r.ok) return;
+    const d = await r.json();
+
+    // Fear & Greed
+    const fng = d.social?.fear_greed || {};
+    const fngVal = fng.value ?? '—';
+    const fngLbl = fng.label ?? 'Neutral';
+    const fngEl  = document.getElementById('intel-fng-value');
+    const fngLlb = document.getElementById('intel-fng-label');
+    if (fngEl) {
+      const v = parseInt(fngVal)||50;
+      fngEl.textContent = fngVal+'/100';
+      fngEl.className   = 'val '+(v>=60?'cg':v>=40?'cy':'cr');
+    }
+    if (fngLlb) fngLlb.textContent = fngLbl;
+
+    // Funding bias
+    const fund = d.funding || {};
+    const biasEl = document.getElementById('intel-funding-bias');
+    const avgEl  = document.getElementById('intel-funding-avg');
+    if (biasEl) {
+      const bias = (fund.market_funding_bias||'neutral').replace(/_/g,' ').toUpperCase();
+      biasEl.textContent = bias;
+      biasEl.className   = 'val '+(bias.includes('HEAVY')?'cr':bias.includes('SLIGHT')?'cy':'cg');
+    }
+    if (avgEl) avgEl.textContent = `avg ${(fund.avg_rate_pct||0).toFixed(5)}% | ${fund.extreme_count||0} extreme`;
+
+    // Trending coins
+    const trendList = document.getElementById('intel-trending-list');
+    if (trendList) {
+      const coins = d.social?.trending_coins || [];
+      if (!coins.length) {
+        trendList.innerHTML = '<div class="nodata cd" style="font-size:11px">No trending data yet</div>';
+      } else {
+        trendList.innerHTML = coins.slice(0,7).map(c => {
+          const sym  = c.symbol||'';
+          const name = c.name||'';
+          const rank = c.rank<500 ? ` #${c.rank}` : '';
+          return `<div style="font-size:11px;padding:2px 0">
+            <span class="mono cy">${sym}</span> — ${name}<span class="cd">${rank}</span>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    // DeFi chains
+    const yieldEnv = document.getElementById('intel-yield-env');
+    const chainList = document.getElementById('intel-chain-list');
+    if (yieldEnv) {
+      const env = (d.defi?.yield_environment||'unknown').replace(/_/g,' ').toUpperCase();
+      const apy = d.defi?.avg_top10_apy||0;
+      yieldEnv.textContent = `${env} | avg APY ${apy.toFixed(1)}%`;
+    }
+    if (chainList) {
+      const chains = d.defi?.chains || {};
+      const entries = Object.entries(chains).sort((a,b)=>b[1].change_1d-a[1].change_1d);
+      if (!entries.length) {
+        chainList.innerHTML = '<div class="nodata cd" style="font-size:11px">No DeFi data yet</div>';
+      } else {
+        chainList.innerHTML = entries.slice(0,6).map(([name,chain]) => {
+          const chg  = chain.change_1d||0;
+          const tvl  = (chain.tvl_usd||0)/1e9;
+          const cls  = chg>=5?'cg':chg<=-5?'cr':'cy';
+          return `<div style="font-size:11px;padding:2px 0">
+            <span class="mono">${name}</span>
+            <span class="${cls}" style="margin-left:6px">${chg>=0?'+':''}${chg.toFixed(1)}%</span>
+            <span class="cd"> $${tvl.toFixed(2)}B</span>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    // Funding arb signals
+    const fundSig = document.getElementById('intel-funding-signals');
+    if (fundSig) {
+      const signals = (d.funding?.arb_signals||[]).slice(0,5);
+      if (!signals.length) {
+        fundSig.innerHTML = '<div class="nodata cd" style="font-size:11px">No notable arb rates right now</div>';
+      } else {
+        fundSig.innerHTML = signals.map(s => {
+          const dir  = s.direction?.replace(/_/g,' ')||'';
+          const rate = s.rate_pct||0;
+          const ann  = s.annualized_pct||0;
+          const cls  = s.strength==='EXTREME'?'cr':'cy';
+          return `<div style="font-size:11px;padding:3px 0;border-bottom:1px solid #2a2a2a">
+            <span class="mono">${s.symbol}</span>
+            <span class="${cls}" style="margin-left:6px">[${s.strength}]</span>
+            <span class="cd" style="margin-left:4px">${dir}</span>
+            <div class="sub">Rate: ${rate>=0?'+':''}${rate.toFixed(4)}% | Ann: ${ann>=0?'+':''}${ann.toFixed(1)}%</div>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    // Grid status
+    const gridList = document.getElementById('intel-grid-list');
+    if (gridList) {
+      const grids = d.grid||{};
+      const entries = Object.entries(grids);
+      if (!entries.length) {
+        gridList.innerHTML = '<div class="nodata cd" style="font-size:11px">Grid engine not active</div>';
+      } else {
+        gridList.innerHTML = entries.map(([sym,gs]) => {
+          if (gs.status==='inactive') return `<div style="font-size:11px;padding:2px 0"><span class="mono">${sym}</span><span class="cd"> — not initialised</span></div>`;
+          const pnl = gs.total_virtual_pnl||0;
+          return `<div style="font-size:11px;padding:3px 0;border-bottom:1px solid #2a2a2a">
+            <span class="mono">${sym}</span>
+            <span class="cd" style="margin-left:6px">${gs.open_levels||0} open / ${gs.total_levels||0} levels</span>
+            <div class="sub">Hits: ${gs.hits||0} | Virtual PnL: <span class="${pnl>=0?'cg':'cr'}">${pnl>=0?'+':''}${pnl.toFixed(4)}</span></div>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    _setTs('intel-ts');
+  } catch(e) {}
+}
+
 /* ── Bot Log: loadLogs ── */
 async function loadLogs() {
   try {
@@ -1979,6 +2133,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadTrades();
   loadArb();
   loadTrends();
+  loadAdvancedIntel();
   loadRejections();
   loadEngines();
   loadIntelligence();
@@ -1995,6 +2150,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(loadTrades,      60_000);   // trade list
   setInterval(loadArb,         60_000);   // arb watch
   setInterval(loadTrends,      60_000);   // trending coins
+  setInterval(loadAdvancedIntel, 60_000); // advanced intel (social/funding/defi/grid)
   setInterval(loadCharts,      60_000);   // price charts
   setInterval(loadRejections, 120_000);   // rejection analytics
   setInterval(loadEngines,      120_000);   // engines & frequency
@@ -2384,6 +2540,36 @@ def api_portfolio_intel():
         return data
 
     return jsonify(_cached("portfolio_intel", _build, 120.0) or {})
+
+
+@app.route("/api/advanced_intel")
+@login_required
+def api_advanced_intel():
+    """Session 6 intel: social sentiment, funding arb, grid engine, DeFi signals."""
+    def _build():
+        result: dict = {}
+        try:
+            import social_sentiment as _ss
+            result["social"] = _ss.get_social_summary()
+        except Exception as exc:
+            result["social"] = {"error": str(exc)}
+        try:
+            import funding_arb as _fa
+            result["funding"] = _fa.get_funding_summary()
+        except Exception as exc:
+            result["funding"] = {"error": str(exc)}
+        try:
+            import grid_engine as _ge
+            result["grid"] = _ge.get_all_grid_status()
+        except Exception as exc:
+            result["grid"] = {"error": str(exc)}
+        try:
+            import defi_signals as _ds
+            result["defi"] = _ds.get_defi_summary()
+        except Exception as exc:
+            result["defi"] = {"error": str(exc)}
+        return result
+    return jsonify(_cached("advanced_intel", _build, 60.0) or {})
 
 
 @app.route("/api/events")

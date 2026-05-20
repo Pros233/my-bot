@@ -61,6 +61,10 @@ import weekly_intelligence_report as wir
 import anomaly_detector
 import confidence_score
 import shadow_analytics
+import social_sentiment
+import funding_arb
+import grid_engine
+import defi_signals
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
@@ -214,10 +218,12 @@ def scan_symbol(
     # ── Setup engines (all optional, never override existing signal) ──────────
     if result.decision not in ("RMR_LONG", "BUY"):
         _engine_checks = [
-            (config.ENABLE_PULLBACK_SETUP,       lambda: setup_engines.get_pullback_signal(df)),
+            (config.ENABLE_PULLBACK_SETUP,        lambda: setup_engines.get_pullback_signal(df)),
             (config.ENABLE_BREAKOUT_SETUP,        lambda: setup_engines.get_breakout_signal(df)),
             (config.ENABLE_NY_MOMENTUM_SETUP,     lambda: setup_engines.get_ny_momentum_signal(df, now_utc)),
             (config.ENABLE_MEAN_REVERSION_SETUP,  lambda: setup_engines.get_mean_reversion_signal(df)),
+            (getattr(config, "ENABLE_INTRADAY_SCALP", False),
+                                                  lambda: setup_engines.get_intraday_scalp_signal(df, now_utc)),
         ]
         for _enabled, _engine_fn in _engine_checks:
             if not _enabled:
@@ -352,6 +358,8 @@ def live(client: Client, data_client: Client | None = None) -> None:
     _cycle_confidence: float = 50.0          # cached confidence score for this cycle
     _cycle_start_ts: float = 0.0             # for exec delay measurement
     _last_confidence_state: str = ""         # for state-change Telegram alerts
+    _last_intel_summary_ts: float = 0.0     # hourly intel: funding arb + social trending
+    _last_funding_alert_ts: float = 0.0     # dedup funding arb extreme alerts
 
     def _cycle_timeout(_signum, _frame):
         raise TimeoutError("Candle cycle timed out (network stall)")
@@ -593,6 +601,12 @@ def live(client: Client, data_client: Client | None = None) -> None:
                         # Sentiment modifier (filter-only, never drives entries)
                         if getattr(config, "ENABLE_SENTIMENT_FILTER", False):
                             _rc.rank_score += sentiment_engine.sentiment_modifier(_rc.symbol)
+                        # Social sentiment modifier (trending coins + fear/greed)
+                        if getattr(config, "ENABLE_SOCIAL_SENTIMENT", False):
+                            _rc.rank_score += social_sentiment.social_rank_modifier(_rc.symbol)
+                        # DeFi ecosystem signal modifier
+                        if getattr(config, "ENABLE_DEFI_SIGNALS", False):
+                            _rc.rank_score += defi_signals.defi_signal_modifier(_rc.symbol)
                         # Learning memory modifier
                         if getattr(config, "ENABLE_LEARNING_MEMORY", False):
                             _regime_key = f"{_rc.trend}+{_rc.vol}"
@@ -1283,6 +1297,75 @@ def live(client: Client, data_client: Client | None = None) -> None:
                     logger.log_warning(
                         f"arbitrage_scanner: scan failed (non-critical): {_arb_exc}"
                     )
+
+            # ── Grid engine update (virtual grid — never live orders) ────────
+            if getattr(config, "ENABLE_GRID_ENGINE", False):
+                try:
+                    for _gsym in ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]:
+                        if _gsym not in results:
+                            continue
+                        _gr = results[_gsym]
+                        if _gr.df.empty:
+                            continue
+                        _gprice = float(_gr.df["close"].iloc[-1])
+                        _gatr   = float(_gr.atr_pct * _gprice / 100.0) if _gr.atr_pct else 0.0
+                        _gevts  = grid_engine.update_grid(_gsym, _gprice, _gatr)
+                        if _gevts.get("filled") or _gevts.get("closed"):
+                            for _gfill in _gevts.get("filled", []):
+                                logger.log_info(
+                                    f"GRID_FILL [{_gsym}] virtual buy @ {_gfill['price']:.2f}"
+                                    f" TP={_gfill['tp']:.2f}"
+                                )
+                            for _gclose in _gevts.get("closed", []):
+                                logger.log_info(
+                                    f"GRID_CLOSE [{_gsym}] virtual exit @ {_gclose['tp']:.2f}"
+                                    f" pnl={_gclose['pnl']:+.6f}"
+                                )
+                except Exception as _ge_exc:
+                    logger.log_warning(f"grid_engine update failed (non-critical): {_ge_exc}")
+
+            # ── Funding arb: extreme rate alert ──────────────────────────────
+            if (getattr(config, "ENABLE_FUNDING_ARB", False)
+                    and getattr(config, "ENABLE_TELEGRAM_BOT", False)):
+                try:
+                    _ARB_ALERT_COOLDOWN = 3600  # 1h between extreme alerts
+                    if time.monotonic() - _last_funding_alert_ts >= _ARB_ALERT_COOLDOWN:
+                        _extreme_arb = [
+                            s for s in funding_arb.get_arb_signals(
+                                getattr(config, "FUNDING_ARB_ALERT_PCT", 0.03)
+                            )
+                            if s["strength"] == "EXTREME"
+                        ]
+                        if _extreme_arb:
+                            _arb_lines = ["*Funding Arb* Extreme Rates Detected"]
+                            for _as in _extreme_arb[:4]:
+                                _arb_lines.append(
+                                    f"`{_as['symbol']}` {_as['direction'].replace('_',' ')}: "
+                                    f"`{_as['rate_pct']:+.4f}%` "
+                                    f"({_as['annualized_pct']:+.1f}% ann)"
+                                )
+                            try:
+                                telegram_bot.send_rejection_summary("\n".join(_arb_lines))
+                            except Exception:
+                                pass
+                            _last_funding_alert_ts = time.monotonic()
+                except Exception as _fa_exc:
+                    logger.log_warning(f"funding_arb alert failed (non-critical): {_fa_exc}")
+
+            # ── Hourly intel summary (trending + funding arb) ─────────────────
+            if (getattr(config, "ENABLE_HOURLY_INTEL_SUMMARY", False)
+                    and getattr(config, "ENABLE_TELEGRAM_BOT", False)):
+                try:
+                    _INTEL_INTERVAL_H = getattr(config, "HOURLY_INTEL_INTERVAL_HOURS", 1)
+                    _intel_elapsed_h  = (time.monotonic() - _last_intel_summary_ts) / 3600
+                    if _intel_elapsed_h >= _INTEL_INTERVAL_H:
+                        import telegram_commands as _tc_intel
+                        _intel_msg = _tc_intel.cmd_intel_summary()
+                        if _intel_msg:
+                            telegram_bot.send_rejection_summary(_intel_msg)
+                        _last_intel_summary_ts = time.monotonic()
+                except Exception as _is_exc:
+                    logger.log_warning(f"hourly intel summary failed (non-critical): {_is_exc}")
 
             # ── Trend scanner (outside SIGALRM window — non-blocking) ──────
             if config.ENABLE_TREND_SCANNER:

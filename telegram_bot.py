@@ -653,6 +653,24 @@ def _handle_command(cmd: str, args: list) -> None:
     elif cmd == "memory":
         _send_text(tc.cmd_memory())
 
+    elif cmd == "scalp":
+        _send_text(tc.cmd_scalp())
+
+    elif cmd == "grid":
+        _send_text(tc.cmd_grid())
+
+    elif cmd == "funding":
+        _send_text(tc.cmd_funding())
+
+    elif cmd == "defi":
+        _send_text(tc.cmd_defi())
+
+    elif cmd == "social":
+        _send_text(tc.cmd_social())
+
+    elif cmd == "intel":
+        _send_text(tc.cmd_intel_summary())
+
     elif cmd == "help":
         _send_text(tc.cmd_help())
 
