@@ -351,6 +351,7 @@ def live(client: Client, data_client: Client | None = None) -> None:
     _last_weekly_intel_ts: float = 0.0       # weekly intelligence report
     _cycle_confidence: float = 50.0          # cached confidence score for this cycle
     _cycle_start_ts: float = 0.0             # for exec delay measurement
+    _last_confidence_state: str = ""         # for state-change Telegram alerts
 
     def _cycle_timeout(_signum, _frame):
         raise TimeoutError("Candle cycle timed out (network stall)")
@@ -457,6 +458,24 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                 f"CONFIDENCE | score={_cycle_confidence:.0f} [{_conf_state}] "
                                 f"— reducing aggressiveness"
                             )
+                        # Alert on state change
+                        if _conf_state != _last_confidence_state and _last_confidence_state != "":
+                            _state_icon = {
+                                confidence_score.NORMAL:    "✅",
+                                confidence_score.CAUTIOUS:  "⚠",
+                                confidence_score.DEFENSIVE: "⛔",
+                            }
+                            _conf_msg = (
+                                f"*Confidence Score* {_state_icon.get(_conf_state,'⚪')}\n"
+                                f"`{_last_confidence_state}` → *{_conf_state}*\n"
+                                f"Score: `{_cycle_confidence:.0f}/100`"
+                            )
+                            if getattr(config, "ENABLE_TELEGRAM_BOT", False):
+                                try:
+                                    telegram_bot.send_rejection_summary(_conf_msg)
+                                except Exception:
+                                    pass
+                        _last_confidence_state = _conf_state
                     except Exception as _cs_exc:
                         logger.log_warning(f"confidence_score cycle error: {_cs_exc}")
 
