@@ -1036,6 +1036,43 @@ tr.clickable:hover td{background:#1c2128;cursor:pointer}
   </div>
 </div>
 
+<!-- N. Portfolio Intelligence -->
+<div class="stitle">Engine Governor</div>
+<div class="g2" style="margin-bottom:10px">
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Tier Status</div>
+    <div id="pi-governor"><div class="nodata cd">Loading…</div></div>
+  </div>
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Portfolio Health</div>
+    <div id="pi-portfolio"><div class="nodata cd">Loading…</div></div>
+  </div>
+</div>
+
+<div class="stitle">Shadow Lab</div>
+<div class="g2" style="margin-bottom:10px">
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Paper Trade Stats</div>
+    <div id="pi-shadow"><div class="nodata cd">Loading…</div></div>
+  </div>
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Learning Memory</div>
+    <div id="pi-memory"><div class="nodata cd">Loading…</div></div>
+  </div>
+</div>
+
+<div class="stitle">Sentiment Heatmap</div>
+<div class="g2" style="margin-bottom:10px">
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">CoinGecko Sentiment</div>
+    <div id="pi-sentiment"><div class="nodata cd">Loading…</div></div>
+  </div>
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Weekly Intelligence</div>
+    <div id="pi-weekly"><div class="nodata cd">Loading…</div></div>
+  </div>
+</div>
+
 <!-- Bot Log -->
 <div class="stitle">Bot Log <span class="stitle-ts" id="log-ts"></span></div>
 <div class="log-box" id="log-box"><span class="cd">Loading&hellip;</span></div>
@@ -1744,6 +1781,104 @@ async function loadEngines() {
   } catch(e) {}
 }
 
+/* ── Portfolio Intelligence panels ── */
+async function loadPortfolioIntel() {
+  try {
+    const d = await fetch('/api/portfolio_intel').then(r => r.json());
+    if (!d) return;
+
+    // Governor
+    const gov = d.governor || {};
+    const govEngines = gov.engines || {};
+    const govCounts = gov.tier_counts || {};
+    const govEl = document.getElementById('pi-governor');
+    if (govEl) {
+      const tierIcon = {TRUSTED: '✅', NEUTRAL: '⚪', PROBATION: '🔴'};
+      const rows = Object.entries(govEngines).map(([eng, info]) => {
+        const icon = tierIcon[info.tier] || '⚪';
+        return `<div style="font-size:11px;margin:2px 0">${icon} <code style="color:#79c0ff">${eng}</code> [${info.tier}] score=<b>${info.score}</b></div>`;
+      });
+      govEl.innerHTML = `<div style="font-size:11px;color:#8b949e;margin-bottom:4px">TRUSTED:${govCounts.TRUSTED||0} NEUTRAL:${govCounts.NEUTRAL||0} PROBATION:${govCounts.PROBATION||0}</div>` + (rows.join('') || '<div class="nodata cd">No governor data</div>');
+    }
+
+    // Shadow lab
+    const shad = d.shadow || {};
+    const shadEngines = shad.engines || {};
+    const shadEl = document.getElementById('pi-shadow');
+    if (shadEl) {
+      const rows = Object.entries(shadEngines).map(([eng, s]) => {
+        const wr = ((s.win_rate||0)*100).toFixed(0);
+        const pnl = (s.total_pnl_pct||0).toFixed(2);
+        const pnlClr = s.total_pnl_pct >= 0 ? '#3fb950' : '#f85149';
+        return `<div style="font-size:11px;margin:2px 0"><code style="color:#79c0ff">${eng}</code> ${s.trades||0}T WR<b>${wr}%</b> pnl=<b style="color:${pnlClr}">${pnl}%</b></div>`;
+      });
+      const hdr = `<div style="font-size:11px;color:#8b949e;margin-bottom:4px">open=${shad.total_open||0} closed=${shad.total_closed||0}</div>`;
+      shadEl.innerHTML = hdr + (rows.join('') || '<div class="nodata cd">No shadow data yet</div>');
+    }
+
+    // Sentiment heatmap
+    const sent = d.sentiment || {};
+    const sentSyms = sent.symbols || {};
+    const sentEl = document.getElementById('pi-sentiment');
+    if (sentEl) {
+      const labelIcon = {greed:'🟢', mild_bullish:'🔼', neutral:'⚪', mild_bearish:'🔽', fear:'🔴'};
+      const rows = Object.entries(sentSyms).map(([sym, s]) => {
+        const icon = labelIcon[s.label] || '⚪';
+        const modClr = s.modifier >= 0 ? '#3fb950' : '#f85149';
+        return `<div style="font-size:11px;margin:2px 0">${icon} <code style="color:#79c0ff">${sym.replace('USDT','')}</code> score=<b>${(s.score||0).toFixed(2)}</b> mod=<b style="color:${modClr}">${(s.modifier||0).toFixed(1)}</b> 24h=${(s.change_24h||0).toFixed(1)}%</div>`;
+      });
+      const avg = (sent.avg_score||0).toFixed(2);
+      const hdr = `<div style="font-size:11px;color:#8b949e;margin-bottom:4px">avg=${avg} (${sent.avg_label||'?'}) cache=${sent.cache_age_s||0}s</div>`;
+      sentEl.innerHTML = hdr + (rows.join('') || '<div class="nodata cd">No sentiment data</div>');
+    }
+
+    // Portfolio health
+    const port = d.portfolio || {};
+    const portEl = document.getElementById('pi-portfolio');
+    if (portEl) {
+      const health = port.health_score || 0;
+      const label  = port.health_label || '?';
+      const hClr   = health >= 75 ? '#3fb950' : health >= 50 ? '#e3b341' : '#f85149';
+      const comps  = port.components || {};
+      const compRows = Object.entries(comps).map(([k,v]) => `<div style="font-size:10px;color:#8b949e">${k}: ${v}</div>`).join('');
+      const secRows = Object.entries(port.sector_exposure || {}).map(([sec, sd]) => {
+        const overClr = sd.over_limit ? '#f85149' : '#8b949e';
+        return `<div style="font-size:10px;color:${overClr}">${sec}: ${sd.count} pos (${(sd.exposure*100).toFixed(0)}%)</div>`;
+      }).join('');
+      portEl.innerHTML = `<div style="font-size:14px;font-weight:bold;color:${hClr}">${health.toFixed(0)}/100 [${label}]</div>${compRows}${secRows ? '<div style="margin-top:4px">'+secRows+'</div>' : ''}`;
+    }
+
+    // Learning memory
+    const mem = d.memory || {};
+    const memEl = document.getElementById('pi-memory');
+    if (memEl) {
+      const strongest = (mem.strongest_pairs || []).slice(0, 3);
+      const weakest   = (mem.weakest_pairs   || []).slice(0, 3);
+      const rows = [
+        ...strongest.map(p => `<div style="font-size:10px;color:#3fb950">↑ ${p.engine}×${p.regime}×${p.session} exp=${p.expectancy} (${p.trades}T)</div>`),
+        ...weakest.map(p   => `<div style="font-size:10px;color:#f85149">↓ ${p.engine}×${p.regime}×${p.session} exp=${p.expectancy} (${p.trades}T)</div>`),
+      ];
+      memEl.innerHTML = `<div style="font-size:11px;color:#8b949e;margin-bottom:4px">patterns=${mem.total_patterns||0}</div>` + (rows.join('') || '<div class="nodata cd">Insufficient data</div>');
+    }
+
+    // Weekly summary
+    const wk = d.weekly || {};
+    const wkEl = document.getElementById('pi-weekly');
+    if (wkEl && !wk.error) {
+      const pnlClr = (wk.total_pnl||0) >= 0 ? '#3fb950' : '#f85149';
+      const wr = ((wk.win_rate||0)*100).toFixed(0);
+      wkEl.innerHTML = `
+        <div style="font-size:11px;color:#8b949e">${wk.week_start||''} → ${wk.week_end||''}</div>
+        <div style="font-size:12px;margin-top:4px">Trades: <b>${wk.total_trades||0}</b> | WR: <b>${wr}%</b> | PnL: <b style="color:${pnlClr}">$${(wk.total_pnl||0).toFixed(4)}</b></div>
+        <div style="font-size:11px;margin-top:4px;color:#8b949e">Best: ${wk.best_engine||'—'} | Worst: ${wk.worst_engine||'—'}</div>
+      `;
+    } else if (wkEl) {
+      wkEl.innerHTML = '<div class="nodata cd">No weekly data yet</div>';
+    }
+
+  } catch(e) {}
+}
+
 /* ── Footer timestamp ── */
 function updateFooter() {
   const el = document.getElementById('footer-ts');
@@ -1764,6 +1899,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadRejections();
   loadEngines();
   loadIntelligence();
+  loadPortfolioIntel();
   loadLogs();
   connectSSE();
   updateFooter();
@@ -1779,6 +1915,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(loadRejections, 120_000);   // rejection analytics
   setInterval(loadEngines,      120_000);   // engines & frequency
   setInterval(loadIntelligence, 120_000);   // leaderboard, equity, correlation
+  setInterval(loadPortfolioIntel, 120_000); // governor, shadow, sentiment, portfolio
   setInterval(loadEquity,     120_000);   // equity curve
   setInterval(loadHeatmap,    300_000);   // signal heatmap
   setInterval(updateFooter,    60_000);   // footer clock
@@ -2086,6 +2223,53 @@ def api_analytics():
         }
 
     return jsonify(_cached("analytics", _build, 120.0) or {})
+
+
+@app.route("/api/portfolio_intel")
+@login_required
+def api_portfolio_intel():
+    """Portfolio intelligence: governor, shadow, sentiment, portfolio, memory, weekly."""
+    def _build():
+        data = {}
+        try:
+            import engine_governor as eg
+            data["governor"] = eg.get_tier_summary()
+        except Exception as exc:
+            data["governor"] = {"error": str(exc)}
+
+        try:
+            import shadow_engine as se
+            data["shadow"] = se.get_shadow_summary()
+        except Exception as exc:
+            data["shadow"] = {"error": str(exc)}
+
+        try:
+            import sentiment_engine as sent
+            data["sentiment"] = sent.get_sentiment_summary()
+        except Exception as exc:
+            data["sentiment"] = {"error": str(exc)}
+
+        try:
+            import portfolio_brain as pb
+            data["portfolio"] = pb.get_portfolio_summary([])
+        except Exception as exc:
+            data["portfolio"] = {"error": str(exc)}
+
+        try:
+            import learning_memory as lm
+            data["memory"] = lm.get_memory_summary()
+        except Exception as exc:
+            data["memory"] = {"error": str(exc)}
+
+        try:
+            import weekly_intelligence_report as wir
+            data["weekly"] = wir.generate_weekly_summary_dict()
+        except Exception as exc:
+            data["weekly"] = {"error": str(exc)}
+
+        return data
+
+    return jsonify(_cached("portfolio_intel", _build, 120.0) or {})
 
 
 @app.route("/api/events")

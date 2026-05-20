@@ -616,6 +616,33 @@ def _handle_command(cmd: str, args: list) -> None:
     elif cmd == "setups":
         _send_text(tc.cmd_setups())
 
+    elif cmd == "governor":
+        _send_text(tc.cmd_governor())
+
+    elif cmd == "shadow":
+        _send_text(tc.cmd_shadow())
+
+    elif cmd == "shadowreport":
+        _send_text(tc.cmd_shadowreport())
+
+    elif cmd == "sentiment":
+        _send_text(tc.cmd_sentiment())
+
+    elif cmd == "trending":
+        _send_text(tc.cmd_trending())
+
+    elif cmd == "portfolio":
+        _send_text(tc.cmd_portfolio(_engines))
+
+    elif cmd == "avoidance":
+        _send_text(tc.cmd_avoidance())
+
+    elif cmd == "weekly":
+        _send_text(tc.cmd_weekly())
+
+    elif cmd == "memory":
+        _send_text(tc.cmd_memory())
+
     elif cmd == "help":
         _send_text(tc.cmd_help())
 

@@ -1044,6 +1044,260 @@ def cmd_setups() -> str:
 
 # ── /help ─────────────────────────────────────────────────────────────────────
 
+def cmd_governor() -> str:
+    """Engine governor — tier summary (TRUSTED/NEUTRAL/PROBATION)."""
+    try:
+        import engine_governor as eg
+        summary = eg.get_tier_summary()
+        engines = summary.get("engines", {})
+        counts  = summary.get("tier_counts", {})
+
+        lines = ["*Engine Governor*"]
+        lines.append(
+            f"TRUSTED: `{counts.get('TRUSTED',0)}` | "
+            f"NEUTRAL: `{counts.get('NEUTRAL',0)}` | "
+            f"PROBATION: `{counts.get('PROBATION',0)}`"
+        )
+        lines.append("")
+
+        tier_icon = {eg.TRUSTED: "✅", eg.NEUTRAL: "⚪", eg.PROBATION: "🔴"}
+        for eng, data in sorted(engines.items()):
+            tier  = data.get("tier", "NEUTRAL")
+            score = data.get("score", 0.0)
+            since = str(data.get("since", ""))[:10]
+            icon  = tier_icon.get(tier, "⚪")
+            lines.append(f"{icon} `{eng}` [{tier}] score=`{score}` since=`{since}`")
+            for ev in data.get("history", [])[-2:]:
+                lines.append(f"    _{ev.get('tier','?')} — {ev.get('reason','')[:60]}_")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /governor error: `{exc}`"
+
+
+def cmd_shadow() -> str:
+    """Shadow lab — paper-trade simulation stats."""
+    try:
+        import shadow_engine as se
+        summary = se.get_shadow_summary()
+        engines_data = summary.get("engines", {})
+
+        lines = [
+            f"*Shadow Lab* | open=`{summary.get('total_open',0)}` "
+            f"closed=`{summary.get('total_closed',0)}`",
+            "",
+        ]
+        if not engines_data:
+            lines.append("_No shadow data yet._")
+            return "\n".join(lines)
+
+        for eng, s in sorted(engines_data.items()):
+            n  = s.get("trades", 0)
+            wr = s.get("win_rate", 0.0) * 100
+            exp = s.get("expectancy", 0.0)
+            pnl = s.get("total_pnl_pct", 0.0)
+            op  = s.get("open", 0)
+            lines.append(
+                f"`{eng}` — {n}T WR`{wr:.0f}%` "
+                f"exp=`{exp:+.3f}%` pnl=`{pnl:+.2f}%` open=`{op}`"
+            )
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /shadow error: `{exc}`"
+
+
+def cmd_shadowreport() -> str:
+    """Shadow lab — open shadow positions."""
+    try:
+        import shadow_engine as se
+        open_trades = se.get_open_shadows()
+        if not open_trades:
+            return "*Shadow Lab* — _No open shadow trades._"
+
+        lines = [f"*Shadow Lab* | {len(open_trades)} open position(s)", ""]
+        for t in open_trades[:15]:
+            lines.append(
+                f"`{t['engine']}` {t['symbol']} {t['direction']} "
+                f"@ `{t['entry']:.4f}` SL`{t['stop']:.4f}` TP`{t['tp']:.4f}`"
+            )
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /shadowreport error: `{exc}`"
+
+
+def cmd_sentiment() -> str:
+    """Sentiment heatmap — CoinGecko sentiment per symbol."""
+    try:
+        import sentiment_engine as se
+        summary = se.get_sentiment_summary()
+        symbols_data = summary.get("symbols", {})
+
+        lines = [
+            f"*Sentiment Heatmap* | avg=`{summary.get('avg_score',0.0):+.2f}` "
+            f"({summary.get('avg_label','neutral')}) "
+            f"[cache age `{summary.get('cache_age_s',0):.0f}s`]",
+            "",
+        ]
+        if not symbols_data:
+            lines.append("_No sentiment data (CoinGecko unavailable)._")
+            return "\n".join(lines)
+
+        label_icon = {
+            "greed": "🟢", "mild_bullish": "🔼",
+            "neutral": "⚪", "mild_bearish": "🔽", "fear": "🔴",
+        }
+        for sym, d in sorted(symbols_data.items()):
+            icon = label_icon.get(d.get("label", "neutral"), "⚪")
+            lines.append(
+                f"{icon} `{sym.replace('USDT','')}` "
+                f"score=`{d['score']:+.2f}` "
+                f"modifier=`{d['modifier']:+.1f}` "
+                f"24h=`{d['change_24h']:+.1f}%`"
+            )
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /sentiment error: `{exc}`"
+
+
+def cmd_trending() -> str:
+    """Top bullish and bearish symbols by sentiment."""
+    try:
+        import sentiment_engine as se
+        summary = se.get_sentiment_summary()
+        bullish = summary.get("top_bullish", [])
+        bearish = summary.get("top_bearish", [])
+
+        lines = ["*Sentiment Trending*", ""]
+        if bullish:
+            lines.append("*Bullish ↑*")
+            for sym in bullish:
+                d = summary.get("symbols", {}).get(sym, {})
+                lines.append(f"  `{sym}` score=`{d.get('score',0):+.2f}` 24h=`{d.get('change_24h',0):+.1f}%`")
+            lines.append("")
+        if bearish:
+            lines.append("*Bearish ↓*")
+            for sym in bearish:
+                d = summary.get("symbols", {}).get(sym, {})
+                lines.append(f"  `{sym}` score=`{d.get('score',0):+.2f}` 24h=`{d.get('change_24h',0):+.1f}%`")
+
+        return "\n".join(lines) if len(lines) > 2 else "*Sentiment Trending* — _no data_"
+    except Exception as exc:
+        return f"⚠ /trending error: `{exc}`"
+
+
+def cmd_portfolio(engines: dict = None) -> str:
+    """Portfolio brain — sector exposure and health score."""
+    try:
+        import portfolio_brain as pb
+        open_syms = []
+        if engines:
+            open_syms = [s for s, e in engines.items() if e.has_open_position()]
+
+        summary = pb.get_portfolio_summary(open_syms)
+        health  = summary.get("health_score", 0.0)
+        label   = summary.get("health_label", "?")
+        sector_exp = summary.get("sector_exposure", {})
+        comps   = summary.get("components", {})
+
+        lines = [
+            f"*Portfolio Brain* | health=`{health:.0f}/100` [{label}]",
+            f"Open positions: `{summary.get('open_positions',0)}`",
+            "",
+        ]
+        if sector_exp:
+            lines.append("*Sector Exposure*")
+            for sec, d in sorted(sector_exp.items()):
+                over = " ⚠ OVER LIMIT" if d.get("over_limit") else ""
+                lines.append(
+                    f"  `{sec}` {d['count']} pos ({d['exposure']*100:.0f}%){over}"
+                )
+            lines.append("")
+
+        lines.append("*Health Components*")
+        for k, v in comps.items():
+            lines.append(f"  {k}: `{v:.0f}`")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /portfolio error: `{exc}`"
+
+
+def cmd_avoidance() -> str:
+    """Market avoidance — current environment conditions (no live data without df)."""
+    try:
+        lines = [
+            "*Market Avoidance*",
+            "_Checks run per-symbol during scan. Conditions detected:_",
+            "",
+            "  `DEAD_LIQUIDITY`  — vol < 20% of avg → CRITICAL (A+ required)",
+            "  `VOLATILITY_CHAOS` — ATR > 3.5× avg → CRITICAL",
+            "  `POST_NEWS_CHOP`  — sharp move + indecisive bars → WARNING (A)",
+            "  `EXHAUSTED_TREND` — 5+ bar trend + declining vol → CAUTION",
+            "  `WEEKEND_THIN`    — Sat/Sun 22:00-08:00 UTC → CAUTION",
+            "  `SPREAD_EXPLOSION` — avg wick > 75% of bar range → WARNING",
+            "",
+            "_Active results appear in bot logs per scan cycle._",
+        ]
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /avoidance error: `{exc}`"
+
+
+def cmd_weekly() -> str:
+    """Weekly intelligence report — last 7 days."""
+    try:
+        import weekly_intelligence_report as wir
+        return wir.generate_weekly_report()
+    except Exception as exc:
+        return f"⚠ /weekly error: `{exc}`"
+
+
+def cmd_memory() -> str:
+    """Learning memory — strongest/weakest engine × regime × session pairs."""
+    try:
+        import learning_memory as lm
+        summary = lm.get_memory_summary()
+
+        lines = [
+            f"*Learning Memory* | patterns=`{summary.get('total_patterns',0)}` "
+            f"[min_sample={summary.get('min_sample',8)}]",
+            "",
+        ]
+
+        strongest = summary.get("strongest_pairs", [])
+        if strongest:
+            lines.append("*Strongest Pairs ↑*")
+            for p in strongest:
+                lines.append(
+                    f"  `{p['engine']}` × `{p['regime']}` × `{p['session']}` "
+                    f"exp=`{p['expectancy']:+.4f}` ({p['trades']}T) "
+                    f"mod=`{p['modifier']:+.1f}`"
+                )
+            lines.append("")
+
+        weakest = summary.get("weakest_pairs", [])
+        if weakest:
+            lines.append("*Weakest Pairs ↓*")
+            for p in weakest:
+                lines.append(
+                    f"  `{p['engine']}` × `{p['regime']}` × `{p['session']}` "
+                    f"exp=`{p['expectancy']:+.4f}` ({p['trades']}T) "
+                    f"mod=`{p['modifier']:+.1f}`"
+                )
+            lines.append("")
+
+        eng_avg = summary.get("engine_avg_expectancy", {})
+        if eng_avg:
+            lines.append("*Engine Avg Expectancy*")
+            for eng, avg in sorted(eng_avg.items(), key=lambda x: -x[1]):
+                icon = "↑" if avg >= 0 else "↓"
+                lines.append(f"  {icon} `{eng}` `{avg:+.4f}`")
+
+        return "\n".join(lines) if len(lines) > 2 else "*Learning Memory* — _insufficient data_"
+    except Exception as exc:
+        return f"⚠ /memory error: `{exc}`"
+
+
 def cmd_help() -> str:
     symbols_str = " | ".join(s.replace("USDT", "").lower() for s in config.SYMBOLS)
     return (
@@ -1084,6 +1338,17 @@ def cmd_help() -> str:
         "/strategies — Per-strategy scan/execute breakdown\n"
         "/engines — Which setup engines are active\n"
         "/setups — Combined setup summary (engines + funnel + frequency)\n"
+        "\n"
+        "*Portfolio Intelligence*\n"
+        "/governor — Engine tier system (TRUSTED/NEUTRAL/PROBATION)\n"
+        "/shadow — Shadow lab paper-trade simulation stats\n"
+        "/shadowreport — Open shadow positions\n"
+        "/sentiment — CoinGecko sentiment heatmap per symbol\n"
+        "/trending — Top bullish/bearish symbols by sentiment\n"
+        "/portfolio — Sector exposure and portfolio health score\n"
+        "/avoidance — Market avoidance conditions reference\n"
+        "/weekly — Weekly intelligence report (last 7 days)\n"
+        "/memory — Learning memory: strongest/weakest engine×regime×session\n"
         "\n"
         "_All commands restricted to authorised chat ID only._"
     )

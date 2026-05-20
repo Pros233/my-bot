@@ -51,6 +51,13 @@ import engine_ranker
 import market_state as mstate
 import equity_protection
 import correlation_guard
+import engine_governor
+import shadow_engine
+import sentiment_engine
+import portfolio_brain
+import market_avoidance
+import learning_memory
+import weekly_intelligence_report as wir
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
@@ -337,6 +344,8 @@ def live(client: Client, data_client: Client | None = None) -> None:
     _last_pinned_update: float = 0.0      # Telegram pinned dashboard (monotonic)
     _last_rejection_summary_ts: float = 0.0  # 12h rejection analytics Telegram summary
     _last_learning_summary_ts: float = 0.0   # 24h engine learning summary
+    _last_governor_check_ts: float = 0.0     # governor tier check (every 4h)
+    _last_weekly_intel_ts: float = 0.0       # weekly intelligence report
 
     def _cycle_timeout(_signum, _frame):
         raise TimeoutError("Candle cycle timed out (network stall)")
@@ -398,6 +407,24 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                     exit_price <= _pos_before_close.stop_price * 1.002):
                                 trade_filters.record_stop_loss(sym)
 
+                # ── Shadow engine evaluation (paper only — NEVER live) ────────
+                if getattr(config, "ENABLE_SHADOW_ENGINES", False):
+                    try:
+                        _prices = {
+                            sym: float(results[sym].df["close"].iloc[-1])
+                            for sym in symbols
+                            if sym in results and not results[sym].df.empty
+                        }
+                        _shadow_closed = shadow_engine.evaluate_shadows(_prices)
+                        for _sc in _shadow_closed:
+                            logger.log_info(
+                                f"SHADOW_CLOSE | {_sc['engine']} {_sc['symbol']} "
+                                f"{_sc['direction']} → {_sc['outcome']} "
+                                f"pnl={_sc['pnl_pct']:+.2f}%"
+                            )
+                    except Exception as _sh_exc:
+                        logger.log_warning(f"shadow_engine.evaluate_shadows failed: {_sh_exc}")
+
                 balance = get_usdt_balance(client)
                 pause_manager.update_balance(balance)
                 open_count = sum(1 for e in engines.values() if e.has_open_position())
@@ -437,6 +464,19 @@ def live(client: Client, data_client: Client | None = None) -> None:
                 except Exception:
                     pass
 
+                # ── Engine governor: tier check (every 4h) ────────────────────
+                if getattr(config, "ENABLE_ENGINE_GOVERNOR", False):
+                    _GOV_INTERVAL = 4 * 3600
+                    if time.monotonic() - _last_governor_check_ts >= _GOV_INTERVAL:
+                        try:
+                            _gov_notifs = engine_governor.check_all_tiers()
+                            for _gn in _gov_notifs:
+                                if getattr(config, "ENABLE_TELEGRAM_BOT", False):
+                                    telegram_bot.send_rejection_summary(_gn)
+                            _last_governor_check_ts = time.monotonic()
+                        except Exception as _gov_exc:
+                            logger.log_warning(f"engine_governor check failed: {_gov_exc}")
+
                 # ── Rank candidates ───────────────────────────────────────────
                 # Apply market-state affinity and engine ranker multiplier
                 # to rank_score before sorting (non-raising).
@@ -461,6 +501,19 @@ def live(client: Client, data_client: Client | None = None) -> None:
                         if not engine_ranker.is_engine_allowed(_eng_name):
                             _rc.decision = "HOLD"
                             _rc.reject_reason = f"{_eng_name} auto-disabled (negative expectancy)"
+                        # Engine governor tier multiplier
+                        if getattr(config, "ENABLE_ENGINE_GOVERNOR", False):
+                            _rc.rank_score *= engine_governor.rank_multiplier_for_tier(_eng_name)
+                        # Sentiment modifier (filter-only, never drives entries)
+                        if getattr(config, "ENABLE_SENTIMENT_FILTER", False):
+                            _rc.rank_score += sentiment_engine.sentiment_modifier(_rc.symbol)
+                        # Learning memory modifier
+                        if getattr(config, "ENABLE_LEARNING_MEMORY", False):
+                            _regime_key = f"{_rc.trend}+{_rc.vol}"
+                            _sess_key   = trade_filters.hour_to_session(now_utc.hour)
+                            _rc.rank_score += learning_memory.memory_modifier(
+                                _eng_name, _regime_key, _sess_key
+                            )
                     except Exception:
                         pass
 
@@ -599,6 +652,43 @@ def live(client: Client, data_client: Client | None = None) -> None:
                             )
                     except Exception as _cg_exc:
                         logger.log_warning(f"correlation_guard check error (non-critical): {_cg_exc}")
+
+                    # ── Portfolio brain: sector exposure ──────────────────────
+                    if not _skip_trade and getattr(config, "ENABLE_PORTFOLIO_BRAIN", False):
+                        try:
+                            _open_syms = [s for s, e in engines.items() if e.has_open_position()]
+                            _pb_ok, _pb_reason = portfolio_brain.check_sector_exposure(
+                                best.symbol, _open_syms, balance
+                            )
+                            if not _pb_ok:
+                                _skip_trade = True
+                                logger.log_info(
+                                    f"PORTFOLIO_BRAIN | {best.symbol} | blocked: {_pb_reason}"
+                                )
+                        except Exception as _pb_exc:
+                            logger.log_warning(f"portfolio_brain check error (non-critical): {_pb_exc}")
+
+                    # ── Market avoidance: grade floor tightening ──────────────
+                    if not _skip_trade and getattr(config, "ENABLE_MARKET_AVOIDANCE", False):
+                        try:
+                            _av_result = market_avoidance.check_avoidance(
+                                best.df, best.symbol, now_utc
+                            )
+                            if _av_result.severity != market_avoidance.SEVERITY_NONE:
+                                _av_grade_floor = market_avoidance.grade_floor_from_avoidance(
+                                    _av_result, _grade
+                                )
+                                _ep_rank = {"A+": 0, "A": 1, "B": 2, "C": 3}
+                                if _ep_rank.get(_grade, 4) > _ep_rank.get(_av_grade_floor, 0):
+                                    _skip_trade = True
+                                    logger.log_info(
+                                        f"AVOIDANCE | {best.symbol} | "
+                                        f"{_av_result.severity} — grade={_grade} below "
+                                        f"floor={_av_grade_floor}: "
+                                        + "; ".join(_av_result.reasons)
+                                    )
+                        except Exception as _av_exc:
+                            logger.log_warning(f"market_avoidance check error (non-critical): {_av_exc}")
 
                     if best.decision == "RMR_LONG":
                         rmr = best.rmr
@@ -978,6 +1068,16 @@ def live(client: Client, data_client: Client | None = None) -> None:
                             logger.log_warning(
                                 f"24h learning summary failed (non-critical): {_ls_exc}"
                             )
+
+                    # Weekly intelligence report (Sunday UTC, 08:00+)
+                    if getattr(config, "ENABLE_WEEKLY_INTELLIGENCE", False):
+                        if wir.should_send_weekly(_last_weekly_intel_ts):
+                            try:
+                                _weekly_text = wir.generate_weekly_report()
+                                telegram_bot.send_rejection_summary(_weekly_text)
+                                _last_weekly_intel_ts = time.monotonic()
+                            except Exception as _wi_exc:
+                                logger.log_warning(f"weekly_intelligence_report failed: {_wi_exc}")
 
                     # 12h rejection analytics summary
                     _RA_INTERVAL = 12 * 3600

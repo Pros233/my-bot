@@ -308,6 +308,29 @@ ENABLE_AUTO_DISABLE_ENGINES: bool = _bool("ENABLE_AUTO_DISABLE_ENGINES", False)
 ENABLE_CORRELATION_GUARD: bool = _bool("ENABLE_CORRELATION_GUARD", True)
 MAX_CORRELATED_POSITIONS: int = _int("MAX_CORRELATED_POSITIONS", 2)
 
+# ── Portfolio-aware adaptive layer ────────────────────────────────────────────
+# Engine governor: tier system (TRUSTED/NEUTRAL/PROBATION) with promotion/demotion
+ENABLE_ENGINE_GOVERNOR: bool = _bool("ENABLE_ENGINE_GOVERNOR", False)
+
+# Sentiment filter: CoinGecko-based sentiment modifier on rank_score (filter-only)
+ENABLE_SENTIMENT_FILTER: bool = _bool("ENABLE_SENTIMENT_FILTER", False)
+
+# Portfolio brain: sector exposure tracking and portfolio health scoring
+ENABLE_PORTFOLIO_BRAIN: bool = _bool("ENABLE_PORTFOLIO_BRAIN", False)
+MAX_SECTOR_EXPOSURE: float = _float("MAX_SECTOR_EXPOSURE", 0.40)
+
+# Market avoidance: dangerous environment detection with grade floor adjustments
+ENABLE_MARKET_AVOIDANCE: bool = _bool("ENABLE_MARKET_AVOIDANCE", False)
+
+# Learning memory: engine × regime × session performance modifiers
+ENABLE_LEARNING_MEMORY: bool = _bool("ENABLE_LEARNING_MEMORY", False)
+
+# Shadow engines: paper-trading simulation (NEVER places live trades)
+ENABLE_SHADOW_ENGINES: bool = _bool("ENABLE_SHADOW_ENGINES", False)
+
+# Weekly intelligence report: sent Sunday UTC at 08:00+
+ENABLE_WEEKLY_INTELLIGENCE: bool = _bool("ENABLE_WEEKLY_INTELLIGENCE", False)
+
 # ── Telegram command bot (operations console) ─────────────────────────────────
 # Set ENABLE_TELEGRAM_BOT=true in .env to activate the background polling daemon.
 ENABLE_TELEGRAM_BOT: bool = _bool("ENABLE_TELEGRAM_BOT", False)
