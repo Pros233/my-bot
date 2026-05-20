@@ -58,6 +58,9 @@ import portfolio_brain
 import market_avoidance
 import learning_memory
 import weekly_intelligence_report as wir
+import anomaly_detector
+import confidence_score
+import shadow_analytics
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
@@ -346,6 +349,8 @@ def live(client: Client, data_client: Client | None = None) -> None:
     _last_learning_summary_ts: float = 0.0   # 24h engine learning summary
     _last_governor_check_ts: float = 0.0     # governor tier check (every 4h)
     _last_weekly_intel_ts: float = 0.0       # weekly intelligence report
+    _cycle_confidence: float = 50.0          # cached confidence score for this cycle
+    _cycle_start_ts: float = 0.0             # for exec delay measurement
 
     def _cycle_timeout(_signum, _frame):
         raise TimeoutError("Candle cycle timed out (network stall)")
@@ -386,12 +391,74 @@ def live(client: Client, data_client: Client | None = None) -> None:
                 engines[symbols[0]].check_clock_sync()
 
                 now_utc = datetime.now(timezone.utc)
+                _cycle_start_ts = time.monotonic()
 
                 # ── Scan all symbols ──────────────────────────────────────────
                 results: dict[str, ScanResult] = {
                     sym: scan_symbol(client, data_client, sym, now_utc)
                     for sym in symbols
                 }
+
+                # ── Anomaly detection (per symbol, non-raising) ───────────────
+                if getattr(config, "ENABLE_ANOMALY_DETECTION", False):
+                    _new_anomalies: list[str] = []
+                    try:
+                        for _sym, _r in results.items():
+                            if _r.df.empty:
+                                continue
+                            _events = anomaly_detector.check_market_anomalies(
+                                _r.df, _sym, _r.adx, _r.atr_pct
+                            )
+                            for _ev in _events:
+                                _is_new = anomaly_detector.record_anomaly(_ev)
+                                if _is_new:
+                                    _new_anomalies.append(
+                                        f"*Anomaly* [{_ev.severity}] `{_ev.anomaly_type}` "
+                                        f"`{_sym}` — {_ev.message}"
+                                    )
+                        # Exec delay check
+                        _exec_delay = time.monotonic() - _cycle_start_ts
+                        _sys_events = anomaly_detector.check_system_anomalies(_exec_delay)
+                        for _ev in _sys_events:
+                            _is_new = anomaly_detector.record_anomaly(_ev)
+                            if _is_new:
+                                _new_anomalies.append(
+                                    f"*Anomaly* [{_ev.severity}] `{_ev.anomaly_type}` "
+                                    f"— {_ev.message}"
+                                )
+                        # Send Telegram alerts for new anomalies
+                        if _new_anomalies and getattr(config, "ENABLE_TELEGRAM_BOT", False):
+                            for _amsg in _new_anomalies:
+                                try:
+                                    telegram_bot.send_rejection_summary(_amsg)
+                                except Exception:
+                                    pass
+                    except Exception as _an_exc:
+                        logger.log_warning(f"anomaly_detector cycle error: {_an_exc}")
+
+                # ── Confidence score (computed once per cycle) ─────────────────
+                if getattr(config, "ENABLE_CONFIDENCE_SCORE", False):
+                    try:
+                        _ms_list = [r.market_state for r in results.values() if r.market_state]
+                        _open_syms_conf = [s for s, e in engines.items() if e.has_open_position()]
+                        _cycle_confidence = confidence_score.compute_confidence(
+                            market_states=_ms_list,
+                            balance=0.0,   # balance not yet fetched; will re-use below
+                            open_positions=_open_syms_conf,
+                        )
+                        _conf_state = confidence_score.get_confidence_state(_cycle_confidence)
+                        if _conf_state == confidence_score.DEFENSIVE:
+                            logger.log_info(
+                                f"CONFIDENCE | score={_cycle_confidence:.0f} [{_conf_state}] "
+                                f"— pausing new entries"
+                            )
+                        elif _conf_state == confidence_score.CAUTIOUS:
+                            logger.log_info(
+                                f"CONFIDENCE | score={_cycle_confidence:.0f} [{_conf_state}] "
+                                f"— reducing aggressiveness"
+                            )
+                    except Exception as _cs_exc:
+                        logger.log_warning(f"confidence_score cycle error: {_cs_exc}")
 
                 # ── Check open positions with fresh candle data ───────────────
                 for sym, engine in engines.items():
@@ -682,6 +749,46 @@ def live(client: Client, data_client: Client | None = None) -> None:
                         except Exception as _pb_exc:
                             logger.log_warning(f"portfolio_brain check error (non-critical): {_pb_exc}")
 
+                    # ── Anomaly detector: pause or reduce aggressiveness ──────
+                    if not _skip_trade and getattr(config, "ENABLE_ANOMALY_DETECTION", False):
+                        try:
+                            if anomaly_detector.should_pause_entries():
+                                _skip_trade = True
+                                _active_anom = anomaly_detector.get_active_anomalies()
+                                _crit = [a for a in _active_anom if a.get("severity") == "CRITICAL"]
+                                logger.log_info(
+                                    f"ANOMALY_PAUSE | {best.symbol} | "
+                                    f"CRITICAL anomaly active: "
+                                    + "; ".join(a.get("message","") for a in _crit[:2])
+                                )
+                        except Exception as _ap_exc:
+                            logger.log_warning(f"anomaly pause check error: {_ap_exc}")
+
+                    # ── Confidence score: DEFENSIVE → pause; CAUTIOUS → tighten ─
+                    if not _skip_trade and getattr(config, "ENABLE_CONFIDENCE_SCORE", False):
+                        try:
+                            _conf_state_now = confidence_score.get_confidence_state(_cycle_confidence)
+                            if _conf_state_now == confidence_score.DEFENSIVE:
+                                _skip_trade = True
+                                logger.log_info(
+                                    f"CONFIDENCE_PAUSE | {best.symbol} | "
+                                    f"score={_cycle_confidence:.0f} DEFENSIVE — no new entries"
+                                )
+                            elif _conf_state_now == confidence_score.CAUTIOUS:
+                                _conf_min_grade = confidence_score.effective_min_grade(
+                                    _grade, _cycle_confidence
+                                )
+                                _ep_rank = {"A+": 0, "A": 1, "B": 2, "C": 3}
+                                if _ep_rank.get(_grade, 4) > _ep_rank.get(_conf_min_grade, 0):
+                                    _skip_trade = True
+                                    logger.log_info(
+                                        f"CONFIDENCE_GRADE | {best.symbol} | "
+                                        f"score={_cycle_confidence:.0f} CAUTIOUS requires "
+                                        f"grade≥{_conf_min_grade} but got {_grade}"
+                                    )
+                        except Exception as _cse_exc:
+                            logger.log_warning(f"confidence grade check error: {_cse_exc}")
+
                     # ── Market avoidance: grade floor tightening ──────────────
                     if not _skip_trade and getattr(config, "ENABLE_MARKET_AVOIDANCE", False):
                         try:
@@ -716,7 +823,10 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                 min(
                                     balance * config.RISK_PER_TRADE / rmr.stop_distance,
                                     balance * config.MAX_POSITION_PCT / rmr.entry_price,
-                                ),
+                                ) * (confidence_score.risk_scale_factor(_cycle_confidence)
+                                     if getattr(config, "ENABLE_CONFIDENCE_SCORE", False) else 1.0)
+                                * (0.75 if getattr(config, "ENABLE_ANOMALY_DETECTION", False)
+                                   and anomaly_detector.should_reduce_aggressiveness() else 1.0),
                                 5,
                             ),
                             risk_amount=round(balance * config.RISK_PER_TRADE, 4),
@@ -863,7 +973,10 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                 min(
                                     balance * config.RISK_PER_TRADE / esig.stop_distance,
                                     balance * config.MAX_POSITION_PCT / esig.entry_price,
-                                ),
+                                ) * (confidence_score.risk_scale_factor(_cycle_confidence)
+                                     if getattr(config, "ENABLE_CONFIDENCE_SCORE", False) else 1.0)
+                                * (0.75 if getattr(config, "ENABLE_ANOMALY_DETECTION", False)
+                                   and anomaly_detector.should_reduce_aggressiveness() else 1.0),
                                 5,
                             ),
                             risk_amount=round(balance * config.RISK_PER_TRADE, 4),

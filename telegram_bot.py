@@ -616,6 +616,16 @@ def _handle_command(cmd: str, args: list) -> None:
     elif cmd == "setups":
         _send_text(tc.cmd_setups())
 
+    elif cmd == "anomalies":
+        _send_text(tc.cmd_anomalies())
+
+    elif cmd == "confidence":
+        _send_text(tc.cmd_confidence())
+
+    elif cmd == "livevshadow":
+        days = int(args[0]) if args and args[0].isdigit() else 30
+        _send_text(tc.cmd_livevshadow(days))
+
     elif cmd == "governor":
         _send_text(tc.cmd_governor())
 

@@ -1036,6 +1036,23 @@ tr.clickable:hover td{background:#1c2128;cursor:pointer}
   </div>
 </div>
 
+<!-- O. Operational Intelligence -->
+<div class="stitle">System Confidence &amp; Anomaly Detection</div>
+<div class="g3" style="margin-bottom:10px">
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Confidence Score</div>
+    <div id="oi-confidence"><div class="nodata cd">Loading…</div></div>
+  </div>
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Active Anomalies</div>
+    <div id="oi-anomalies"><div class="nodata cd">Loading…</div></div>
+  </div>
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Live vs Shadow</div>
+    <div id="oi-livevshadow"><div class="nodata cd">Loading…</div></div>
+  </div>
+</div>
+
 <!-- N. Portfolio Intelligence -->
 <div class="stitle">Engine Governor</div>
 <div class="g2" style="margin-bottom:10px">
@@ -1781,6 +1798,72 @@ async function loadEngines() {
   } catch(e) {}
 }
 
+/* ── Operational Intelligence panels ── */
+async function loadOperationalIntel() {
+  try {
+    const d = await fetch('/api/operational_intel').then(r => r.json());
+    if (!d) return;
+
+    // Confidence score
+    const conf = d.confidence || {};
+    const confEl = document.getElementById('oi-confidence');
+    if (confEl) {
+      const score = conf.score || 0;
+      const state = conf.state || '?';
+      const scale = conf.risk_scale || 1.0;
+      const stateClr = state === 'NORMAL' ? '#3fb950' : state === 'CAUTIOUS' ? '#e3b341' : '#f85149';
+      const comps = conf.components || {};
+      const compRows = Object.entries(comps).map(([k, v]) => {
+        const pct = Math.min(100, v);
+        return `<div style="font-size:10px;margin:2px 0;color:#8b949e">${k}: <b style="color:#c9d1d9">${v.toFixed(1)}</b></div>`;
+      }).join('');
+      confEl.innerHTML = `
+        <div style="font-size:18px;font-weight:bold;color:${stateClr}">${score.toFixed(0)}/100</div>
+        <div style="font-size:12px;color:${stateClr};margin-bottom:6px">[${state}] risk_scale=${scale.toFixed(2)}</div>
+        ${compRows}
+      `;
+    }
+
+    // Anomalies
+    const anom = d.anomalies || {};
+    const anomEl = document.getElementById('oi-anomalies');
+    if (anomEl) {
+      const active = anom.active || [];
+      const pauseClr = anom.pause_entries ? '#f85149' : anom.reduce_aggressiveness ? '#e3b341' : '#3fb950';
+      const pauseMsg = anom.pause_entries ? '⛔ ENTRIES PAUSED' : anom.reduce_aggressiveness ? '⚠ Risk ×0.75' : '✅ Normal';
+      const rows = active.map(a => {
+        const sClr = a.severity === 'CRITICAL' ? '#f85149' : '#e3b341';
+        return `<div style="font-size:10px;margin:2px 0;color:${sClr}">[${a.severity}] ${a.anomaly_type} | ${a.symbol} — ${a.message}</div>`;
+      });
+      anomEl.innerHTML = `
+        <div style="font-size:13px;font-weight:bold;color:${pauseClr};margin-bottom:6px">${pauseMsg}</div>
+        <div style="font-size:11px;color:#8b949e;margin-bottom:4px">warn=${anom.warnings||0} crit=${anom.criticals||0}</div>
+        ${rows.join('') || '<div style="font-size:11px;color:#8b949e">No active anomalies</div>'}
+      `;
+    }
+
+    // Live vs Shadow
+    const lvs = d.livevshadow || {};
+    const lvsEl = document.getElementById('oi-livevshadow');
+    if (lvsEl) {
+      const engines = lvs.engines || {};
+      const outperformers = lvs.outperforming || [];
+      const rows = Object.entries(engines).map(([eng, data]) => {
+        const live = data.live || {};
+        const shadow = data.shadow || {};
+        const delta = data.delta_expectancy;
+        const flag = data.outperforms ? ' ★' : '';
+        const dClr = delta > 0 ? '#3fb950' : delta < 0 ? '#f85149' : '#8b949e';
+        const dStr = delta !== null && delta !== undefined ? `${delta >= 0 ? '+' : ''}${delta.toFixed(4)}` : '—';
+        return `<div style="font-size:10px;margin:2px 0"><code style="color:#79c0ff">${eng}</code> L:${live.trades||0}T | S:${shadow.trades||0}T | Δ<b style="color:${dClr}">${dStr}</b>${flag}</div>`;
+      });
+      const hdr = `<div style="font-size:11px;color:#8b949e;margin-bottom:4px">live=${lvs.total_live_trades||0}T shadow=${lvs.total_shadow_trades||0}T outperf=${outperformers.length}</div>`;
+      lvsEl.innerHTML = hdr + (rows.join('') || '<div class="nodata cd">No data yet</div>');
+    }
+
+  } catch(e) {}
+}
+
 /* ── Portfolio Intelligence panels ── */
 async function loadPortfolioIntel() {
   try {
@@ -1899,6 +1982,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadRejections();
   loadEngines();
   loadIntelligence();
+  loadOperationalIntel();
   loadPortfolioIntel();
   loadLogs();
   connectSSE();
@@ -1915,6 +1999,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(loadRejections, 120_000);   // rejection analytics
   setInterval(loadEngines,      120_000);   // engines & frequency
   setInterval(loadIntelligence, 120_000);   // leaderboard, equity, correlation
+  setInterval(loadOperationalIntel, 60_000);  // anomalies, confidence, live-vs-shadow
   setInterval(loadPortfolioIntel, 120_000); // governor, shadow, sentiment, portfolio
   setInterval(loadEquity,     120_000);   // equity curve
   setInterval(loadHeatmap,    300_000);   // signal heatmap
@@ -2223,6 +2308,35 @@ def api_analytics():
         }
 
     return jsonify(_cached("analytics", _build, 120.0) or {})
+
+
+@app.route("/api/operational_intel")
+@login_required
+def api_operational_intel():
+    """Anomaly detection, confidence score, and live-vs-shadow comparison."""
+    def _build():
+        data = {}
+        try:
+            import anomaly_detector as ad
+            data["anomalies"] = ad.get_anomaly_summary()
+        except Exception as exc:
+            data["anomalies"] = {"error": str(exc)}
+
+        try:
+            import confidence_score as cs
+            data["confidence"] = cs.get_confidence_summary()
+        except Exception as exc:
+            data["confidence"] = {"error": str(exc)}
+
+        try:
+            import shadow_analytics as sa
+            data["livevshadow"] = sa.get_comparison_summary(days=30)
+        except Exception as exc:
+            data["livevshadow"] = {"error": str(exc)}
+
+        return data
+
+    return jsonify(_cached("operational_intel", _build, 60.0) or {})
 
 
 @app.route("/api/portfolio_intel")

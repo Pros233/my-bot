@@ -331,6 +331,16 @@ ENABLE_SHADOW_ENGINES: bool = _bool("ENABLE_SHADOW_ENGINES", False)
 # Weekly intelligence report: sent Sunday UTC at 08:00+
 ENABLE_WEEKLY_INTELLIGENCE: bool = _bool("ENABLE_WEEKLY_INTELLIGENCE", False)
 
+# ── Operational intelligence layer ───────────────────────────────────────────
+# Anomaly detection: auto-reduce aggressiveness or pause on market/system events
+ENABLE_ANOMALY_DETECTION: bool = _bool("ENABLE_ANOMALY_DETECTION", False)
+
+# Confidence scoring: 0-100 daily score adjusts risk scale and grade floor
+ENABLE_CONFIDENCE_SCORE: bool = _bool("ENABLE_CONFIDENCE_SCORE", False)
+
+# Live vs shadow comparative analytics: persist shadow trades to DB
+ENABLE_SHADOW_ANALYTICS: bool = _bool("ENABLE_SHADOW_ANALYTICS", False)
+
 # ── Telegram command bot (operations console) ─────────────────────────────────
 # Set ENABLE_TELEGRAM_BOT=true in .env to activate the background polling daemon.
 ENABLE_TELEGRAM_BOT: bool = _bool("ENABLE_TELEGRAM_BOT", False)

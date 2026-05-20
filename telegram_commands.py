@@ -1044,6 +1044,133 @@ def cmd_setups() -> str:
 
 # ── /help ─────────────────────────────────────────────────────────────────────
 
+def cmd_anomalies() -> str:
+    """Active anomalies and system auto-response status."""
+    try:
+        import anomaly_detector as ad
+        summary = ad.get_anomaly_summary()
+        active  = summary.get("active", [])
+
+        lines = [
+            f"*Anomaly Detector* | total=`{summary.get('total',0)}` "
+            f"warn=`{summary.get('warnings',0)}` crit=`{summary.get('criticals',0)}`",
+            "",
+        ]
+        if summary.get("pause_entries"):
+            lines.append("⛔ *ENTRIES PAUSED* — CRITICAL anomaly active")
+        elif summary.get("reduce_aggressiveness"):
+            lines.append("⚠ *Aggressiveness reduced* — WARNING anomaly active (risk ×0.75)")
+        else:
+            lines.append("✅ No auto-response active")
+        lines.append("")
+
+        if not active:
+            lines.append("_No active anomalies._")
+        else:
+            sev_icon = {"WARNING": "⚠", "CRITICAL": "🔴"}
+            for a in active:
+                icon = sev_icon.get(a.get("severity",""), "⚪")
+                lines.append(
+                    f"{icon} `{a.get('anomaly_type','?')}` | `{a.get('symbol','?')}` | "
+                    f"×{a.get('count',1)} | {a.get('message','')}"
+                )
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /anomalies error: `{exc}`"
+
+
+def cmd_confidence() -> str:
+    """System confidence score and trading behavior state."""
+    try:
+        import confidence_score as cs
+        summary = cs.get_confidence_summary()
+        score  = summary.get("score", 0.0)
+        state  = summary.get("state", "?")
+        scale  = summary.get("risk_scale", 1.0)
+        comps  = summary.get("components", {})
+        thresh = summary.get("thresholds", {})
+
+        state_icon = {
+            cs.NORMAL:    "✅",
+            cs.CAUTIOUS:  "⚠",
+            cs.DEFENSIVE: "⛔",
+        }
+        icon = state_icon.get(state, "⚪")
+
+        lines = [
+            f"*System Confidence* {icon}",
+            f"Score: `{score:.0f}/100` [{state}]  risk_scale=`{scale:.2f}`",
+            f"Thresholds: normal≥`{thresh.get('normal',70)}` cautious≥`{thresh.get('cautious',40)}`",
+            "",
+            "*Components*",
+        ]
+        for k, v in comps.items():
+            bar_filled = "█" * int(v / 10) + "░" * (10 - int(v / 10))
+            lines.append(f"  `{k:<24}` `{v:5.1f}` [{bar_filled}]")
+
+        lines.append("")
+        if state == cs.DEFENSIVE:
+            lines.append("_⛔ No new entries until confidence recovers above 40._")
+        elif state == cs.CAUTIOUS:
+            lines.append("_⚠ Risk scaled down, grade floor tightened by 1 level._")
+        else:
+            lines.append("_✅ Full operation — no restrictions._")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /confidence error: `{exc}`"
+
+
+def cmd_livevshadow(days: int = 30) -> str:
+    """Live vs shadow comparative analytics."""
+    try:
+        import shadow_analytics as sa
+        summary      = sa.get_comparison_summary(days)
+        engines      = summary.get("engines", {})
+        outperformers = summary.get("outperforming", [])
+
+        lines = [
+            f"*Live vs Shadow* | last `{days}d`",
+            f"Live trades: `{summary.get('total_live_trades',0)}` | "
+            f"Shadow trades: `{summary.get('total_shadow_trades',0)}`",
+            "",
+        ]
+
+        if not engines:
+            lines.append("_No comparison data yet._")
+            return "\n".join(lines)
+
+        lines.append("*Per-Engine* (live exp vs shadow exp%)")
+        for eng, data in sorted(engines.items()):
+            live   = data.get("live",   {})
+            shadow = data.get("shadow", {})
+            delta  = data.get("delta_expectancy")
+            flag   = " ★" if data.get("outperforms") else ""
+            l_t = live.get("trades", 0)
+            s_t = shadow.get("trades", 0)
+            l_e = live.get("expectancy")
+            s_e = shadow.get("expectancy_pct")
+            l_str = f"{l_e:+.4f}" if l_e is not None else "—"
+            s_str = f"{s_e:+.4f}%" if s_e is not None else "—"
+            d_str = f"{delta:+.4f}" if delta is not None else "—"
+            lines.append(
+                f"  `{eng}` L:{l_t}T `{l_str}` | S:{s_t}T `{s_str}` | Δ`{d_str}`{flag}"
+            )
+
+        if outperformers:
+            lines.append("")
+            lines.append(f"*★ Outperformers ({len(outperformers)})*")
+            for item in outperformers:
+                eng   = item.get("engine","?")
+                delta = item.get("delta_expectancy", 0.0)
+                lines.append(f"  `{eng}` shadow outperforms live by `{delta:+.4f}`")
+            lines.append("_→ Consider promoting to live testing._")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /livevshadow error: `{exc}`"
+
+
 def cmd_governor() -> str:
     """Engine governor — tier summary (TRUSTED/NEUTRAL/PROBATION)."""
     try:
@@ -1338,6 +1465,11 @@ def cmd_help() -> str:
         "/strategies — Per-strategy scan/execute breakdown\n"
         "/engines — Which setup engines are active\n"
         "/setups — Combined setup summary (engines + funnel + frequency)\n"
+        "\n"
+        "*Operational Intelligence*\n"
+        "/anomalies — Active anomalies and auto-response status\n"
+        "/confidence — System confidence score (0-100) and trading state\n"
+        "/livevshadow — Live vs shadow comparative analytics\n"
         "\n"
         "*Portfolio Intelligence*\n"
         "/governor — Engine tier system (TRUSTED/NEUTRAL/PROBATION)\n"

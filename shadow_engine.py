@@ -167,6 +167,26 @@ def evaluate_shadows(prices: dict[str, float]) -> list[dict]:
                 else:
                     pnl_pct = (t["entry"] - exit_price) / t["entry"] * 100
 
+                # Persist to shadow_trades DB table for comparative analytics
+                try:
+                    import shadow_analytics as _sa
+                    _sa.record_shadow_trade(
+                        engine=t["engine"],
+                        symbol=t["symbol"],
+                        direction=t["direction"],
+                        entry_price=t["entry"],
+                        exit_price=exit_price,
+                        stop_price=t["stop"],
+                        tp_price=t["tp"],
+                        outcome=outcome,
+                        pnl_pct=round(pnl_pct, 3),
+                        opened_at=t.get("opened_at", ""),
+                        closed_at=ts,
+                        reason=t.get("reason", ""),
+                    )
+                except Exception as _sa_exc:
+                    logger.log_warning(f"shadow_analytics.record failed (non-critical): {_sa_exc}")
+
                 closed_trade = {
                     **t,
                     "closed_at":  ts,
