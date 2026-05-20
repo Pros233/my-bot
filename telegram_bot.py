@@ -580,6 +580,21 @@ def _handle_command(cmd: str, args: list) -> None:
     elif cmd == "rejections":
         _send_text(tc.cmd_rejections())
 
+    elif cmd == "funnel":
+        _send_text(tc.cmd_funnel())
+
+    elif cmd == "frequency":
+        _send_text(tc.cmd_frequency())
+
+    elif cmd == "strategies":
+        _send_text(tc.cmd_strategies())
+
+    elif cmd == "engines":
+        _send_text(tc.cmd_engines())
+
+    elif cmd == "setups":
+        _send_text(tc.cmd_setups())
+
     elif cmd == "help":
         _send_text(tc.cmd_help())
 

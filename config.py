@@ -319,6 +319,29 @@ SYMBOLS: list[str] = (
     if _SYMBOLS_RAW.strip()
     else [SYMBOL]
 )
+
+# ── Expanded symbol set ───────────────────────────────────────────────────────
+# When true, appends liquid alt-coins to the scan list (deduped).
+ENABLE_EXPANDED_SYMBOLS: bool = _bool("ENABLE_EXPANDED_SYMBOLS", False)
+_EXPANDED_SYMBOLS: list[str] = [
+    "XRPUSDT", "DOGEUSDT", "ADAUSDT", "LINKUSDT",
+    "AVAXUSDT", "SUIUSDT", "TONUSDT",
+]
+if ENABLE_EXPANDED_SYMBOLS:
+    SYMBOLS = list(dict.fromkeys(SYMBOLS + _EXPANDED_SYMBOLS))
+
+# ── Live setup engines (all disabled by default) ─────────────────────────────
+# Each engine is independent and appends to the existing scan pipeline.
+# Enable individually via .env once ready to validate live.
+ENABLE_PULLBACK_SETUP: bool      = _bool("ENABLE_PULLBACK_SETUP",      False)
+ENABLE_BREAKOUT_SETUP: bool      = _bool("ENABLE_BREAKOUT_SETUP",      False)
+ENABLE_NY_MOMENTUM_SETUP: bool   = _bool("ENABLE_NY_MOMENTUM_SETUP",   False)
+ENABLE_MEAN_REVERSION_SETUP: bool = _bool("ENABLE_MEAN_REVERSION_SETUP", False)
+
+# Soft 15-minute confirmation check — logs caution and reduces rank_score by 15
+# but NEVER blocks a trade (hard_fail=False by design).
+ENABLE_15M_CONFIRMATION: bool    = _bool("ENABLE_15M_CONFIRMATION",    False)
+
 MAX_OPEN_TRADES: int = _int("MAX_OPEN_TRADES", 1)
 MAX_TOTAL_RISK: float = _float("MAX_TOTAL_RISK", 0.01)
 

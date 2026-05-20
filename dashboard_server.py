@@ -963,6 +963,25 @@ tr.clickable:hover td{background:#1c2128;cursor:pointer}
   </div>
 </div>
 
+<!-- I. Engines & Frequency -->
+<div class="stitle">Setup Engines &amp; Trade Frequency <span class="stitle-ts" id="eng-ts"></span></div>
+<div class="g4" id="eng-freq-stats" style="margin-bottom:10px">
+  <div class="card"><div class="lbl">Active Engines</div><div class="val cy" id="eng-active">—</div></div>
+  <div class="card"><div class="lbl">Symbols Scanned</div><div class="val" id="eng-symbols">—</div></div>
+  <div class="card"><div class="lbl">Setups/day (7d)</div><div class="val cg" id="eng-setups-day">—</div></div>
+  <div class="card"><div class="lbl">Trades/day (7d)</div><div class="val cg" id="eng-trades-day">—</div></div>
+</div>
+<div class="g2" style="margin-bottom:10px">
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Engine Status</div>
+    <div id="eng-status-list"><div class="nodata cd">No data yet</div></div>
+  </div>
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">By Strategy (all-time)</div>
+    <div id="eng-strategy-list"><div class="nodata cd">No data yet</div></div>
+  </div>
+</div>
+
 <!-- Bot Log -->
 <div class="stitle">Bot Log <span class="stitle-ts" id="log-ts"></span></div>
 <div class="log-box" id="log-box"><span class="cd">Loading&hellip;</span></div>
@@ -1529,6 +1548,49 @@ async function loadRejections() {
   } catch(e) {}
 }
 
+/* ── I. Setup Engines & Frequency: loadEngines ── */
+async function loadEngines() {
+  try {
+    const d = await fetch('/api/engines').then(r => r.json());
+    if (!d) return;
+    document.getElementById('eng-ts').textContent = new Date().toLocaleTimeString();
+
+    // Stat cards
+    const active = d.active_count ?? 0;
+    const symbols = (d.symbols || []).length;
+    const freq = d.freq || {};
+    document.getElementById('eng-active').textContent     = `${active} / 5`;
+    document.getElementById('eng-symbols').textContent    = symbols;
+    document.getElementById('eng-setups-day').textContent = freq.avg_scanned_per_day_7d ?? '—';
+    document.getElementById('eng-trades-day').textContent = freq.avg_executed_per_day_7d ?? '—';
+
+    // Engine status list
+    const flags = d.engine_flags || {};
+    const statusEl = document.getElementById('eng-status-list');
+    const statusRows = Object.entries(flags).map(([name, on]) => {
+      const dot = on ? '<span style="color:#3fb950">●</span>' : '<span style="color:#484f58">○</span>';
+      return `<div style="font-size:12px;margin:2px 0">${dot} <code style="color:${on ? '#79c0ff' : '#8b949e'}">${name}</code></div>`;
+    });
+    const confRow = `<div style="font-size:11px;margin-top:6px;color:#8b949e">15m confirm: ${d.conf_15m ? '<span style="color:#e3b341">ON</span>' : 'off'} | min_grade: <code>${d.min_grade || '?'}</code> | expanded: ${d.expanded ? '<span style="color:#e3b341">ON</span>' : 'off'}</div>`;
+    statusEl.innerHTML = statusRows.join('') + confRow;
+
+    // Strategy breakdown
+    const byStrat = (freq.by_strategy) || {};
+    const stratEl = document.getElementById('eng-strategy-list');
+    const stratKeys = Object.keys(byStrat).sort((a, b) => (byStrat[b].scanned || 0) - (byStrat[a].scanned || 0));
+    if (stratKeys.length === 0) {
+      stratEl.innerHTML = '<div class="nodata cd">No strategy data yet</div>';
+    } else {
+      stratEl.innerHTML = stratKeys.map(s => {
+        const sc = byStrat[s].scanned || 0;
+        const ex = byStrat[s].executed || 0;
+        const ep = sc > 0 ? Math.round(ex / sc * 100) : 0;
+        return `<div style="font-size:11px;margin:2px 0"><code style="color:#79c0ff">${s}</code> — scanned <b>${sc}</b> | executed <b>${ex}</b> (${ep}%)</div>`;
+      }).join('');
+    }
+  } catch(e) {}
+}
+
 /* ── Footer timestamp ── */
 function updateFooter() {
   const el = document.getElementById('footer-ts');
@@ -1547,6 +1609,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadArb();
   loadTrends();
   loadRejections();
+  loadEngines();
   loadLogs();
   connectSSE();
   updateFooter();
@@ -1560,6 +1623,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(loadTrends,      60_000);   // trending coins
   setInterval(loadCharts,      60_000);   // price charts
   setInterval(loadRejections, 120_000);   // rejection analytics
+  setInterval(loadEngines,   120_000);   // engines & frequency
   setInterval(loadEquity,     120_000);   // equity curve
   setInterval(loadHeatmap,    300_000);   // signal heatmap
   setInterval(updateFooter,    60_000);   // footer clock
@@ -1729,6 +1793,36 @@ def api_summary():
 @login_required
 def api_rejections():
     return jsonify(_cached("rejections", _fetch_rejection_analytics, 30.0) or {})
+
+
+@app.route("/api/engines")
+@login_required
+def api_engines():
+    def _build():
+        import config as cfg
+        try:
+            import rejection_analytics as ra
+            freq = ra.get_frequency_stats()
+        except Exception:
+            freq = {}
+
+        engine_flags = {
+            "RMR":       getattr(cfg, "ENABLE_RANGE_MR", False),
+            "PULLBACK":  getattr(cfg, "ENABLE_PULLBACK_SETUP", False),
+            "BREAKOUT":  getattr(cfg, "ENABLE_BREAKOUT_SETUP", False),
+            "NY_MOM":    getattr(cfg, "ENABLE_NY_MOMENTUM_SETUP", False),
+            "MICRO_MR":  getattr(cfg, "ENABLE_MEAN_REVERSION_SETUP", False),
+        }
+        return {
+            "engine_flags":    engine_flags,
+            "active_count":    sum(1 for v in engine_flags.values() if v),
+            "symbols":         getattr(cfg, "SYMBOLS", []),
+            "expanded":        getattr(cfg, "ENABLE_EXPANDED_SYMBOLS", False),
+            "min_grade":       getattr(cfg, "MIN_TRADE_GRADE", "A"),
+            "conf_15m":        getattr(cfg, "ENABLE_15M_CONFIRMATION", False),
+            "freq":            freq,
+        }
+    return jsonify(_cached("engines", _build, 60.0) or {})
 
 
 @app.route("/api/analytics")

@@ -595,6 +595,182 @@ def cmd_rejections() -> str:
         return f"⚠ /rejections error: `{exc}`"
 
 
+# ── /funnel ───────────────────────────────────────────────────────────────────
+
+def cmd_funnel() -> str:
+    """Setup funnel: scanned → rejected → executed with grade breakdown."""
+    try:
+        import rejection_analytics as ra
+        f = ra.get_funnel()
+        s = ra.get_summary()
+        total = f["scanned"]
+        if total == 0:
+            return "*Setup Funnel*: no data yet."
+
+        rej_pct  = round(f["rejected"] / total * 100) if total else 0
+        exec_pct = round(f["executed"] / total * 100) if total else 0
+        lines = [
+            f"*Setup Funnel* (all-time)",
+            f"",
+            f"  Scanned:  `{total}`",
+            f"  Rejected: `{f['rejected']}` ({rej_pct}%)",
+            f"  Passed:   `{f['passed']}`",
+            f"  Executed: `{f['executed']}` ({exec_pct}%)",
+            f"",
+            f"*Grade Breakdown*",
+            f"  `A+` {f['grade_Aplus']}  `A` {f['grade_A']}  "
+            f"`B` {f['grade_B']}  `C` {f['grade_C']}  `REJECT` {f['grade_REJECT']}",
+        ]
+        top = s["top_reasons"]
+        if top:
+            lines += ["", "*Top Rejection Reasons*"]
+            for reason, count in top[:4]:
+                pct = round(count / max(f["rejected"], 1) * 100)
+                lines.append(f"  `{reason[:40]}` — {pct}%")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /funnel error: `{exc}`"
+
+
+# ── /frequency ────────────────────────────────────────────────────────────────
+
+def cmd_frequency() -> str:
+    """Trade frequency analytics: setups/day, executions/day."""
+    try:
+        import rejection_analytics as ra
+        freq = ra.get_frequency_stats()
+        series = ra.get_daily_series(days=7)
+
+        lines = [
+            f"*Trade Frequency* (7-day avg)",
+            f"",
+            f"  Setups/day:  `{freq['avg_scanned_per_day_7d']:.1f}`",
+            f"  Trades/day:  `{freq['avg_executed_per_day_7d']:.1f}`",
+            f"",
+            f"*Daily Breakdown* (last 7 days)",
+        ]
+        dates   = series["dates"][-7:]
+        scanned = series["scanned"][-7:]
+        executed = series["executed"][-7:]
+        for i, d in enumerate(dates):
+            lines.append(
+                f"  `{d[-5:]}` — setups: {scanned[i]}  executed: {executed[i]}"
+            )
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /frequency error: `{exc}`"
+
+
+# ── /strategies ───────────────────────────────────────────────────────────────
+
+def cmd_strategies() -> str:
+    """Per-strategy scan/execute breakdown."""
+    try:
+        import rejection_analytics as ra
+        freq = ra.get_frequency_stats()
+        by_strat = freq.get("by_strategy", {})
+
+        if not by_strat:
+            return "*Strategies*: no per-strategy data yet."
+
+        lines = [f"*Strategy Breakdown* (all-time)"]
+        for strat, counts in sorted(by_strat.items(), key=lambda x: -x[1]["scanned"]):
+            sc = counts["scanned"]
+            ex = counts["executed"]
+            rj = counts["rejected"]
+            exec_pct = round(ex / sc * 100) if sc > 0 else 0
+            lines.append(
+                f"  `{strat}` — scanned {sc} | executed {ex} ({exec_pct}%) | rejected {rj}"
+            )
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /strategies error: `{exc}`"
+
+
+# ── /engines ──────────────────────────────────────────────────────────────────
+
+def cmd_engines() -> str:
+    """Show which setup engines are currently enabled/disabled."""
+    try:
+        flags = {
+            "RMR (range mean-reversion)":  getattr(config, "ENABLE_RANGE_MR", False),
+            "Pullback continuation":        getattr(config, "ENABLE_PULLBACK_SETUP", False),
+            "Volatility breakout":          getattr(config, "ENABLE_BREAKOUT_SETUP", False),
+            "NY open momentum":             getattr(config, "ENABLE_NY_MOMENTUM_SETUP", False),
+            "Mean-reversion micro":         getattr(config, "ENABLE_MEAN_REVERSION_SETUP", False),
+        }
+        min_grade = getattr(config, "MIN_TRADE_GRADE", "A")
+        expanded  = getattr(config, "ENABLE_EXPANDED_SYMBOLS", False)
+        conf_15m  = getattr(config, "ENABLE_15M_CONFIRMATION", False)
+
+        lines = [f"*Setup Engines* | min_grade=`{min_grade}`"]
+        lines.append(
+            f"Symbols: `{', '.join(config.SYMBOLS[:5])}{'…' if len(config.SYMBOLS) > 5 else ''}`"
+        )
+        lines.append(f"Expanded symbols: `{'ON' if expanded else 'off'}`")
+        lines.append(f"15m confirmation: `{'ON' if conf_15m else 'off'}`")
+        lines.append("")
+        for name, enabled in flags.items():
+            icon = "✅" if enabled else "⬜"
+            lines.append(f"  {icon} `{name}`")
+        active = sum(1 for v in flags.values() if v)
+        lines.append(f"\n_Active engines: {active}/{len(flags)}_")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /engines error: `{exc}`"
+
+
+# ── /setups ───────────────────────────────────────────────────────────────────
+
+def cmd_setups() -> str:
+    """Combined funnel + frequency + engine status in one compact view."""
+    try:
+        import rejection_analytics as ra
+        freq   = ra.get_frequency_stats()
+        funnel = ra.get_funnel()
+
+        total  = funnel["scanned"]
+        exec_n = funnel["executed"]
+        rej_pct = round(funnel["rejected"] / max(total, 1) * 100)
+
+        flags = {
+            "RMR":       getattr(config, "ENABLE_RANGE_MR", False),
+            "PULLBACK":  getattr(config, "ENABLE_PULLBACK_SETUP", False),
+            "BREAKOUT":  getattr(config, "ENABLE_BREAKOUT_SETUP", False),
+            "NY_MOM":    getattr(config, "ENABLE_NY_MOMENTUM_SETUP", False),
+            "MICRO_MR":  getattr(config, "ENABLE_MEAN_REVERSION_SETUP", False),
+        }
+        active_engines = [k for k, v in flags.items() if v]
+        min_grade = getattr(config, "MIN_TRADE_GRADE", "A")
+
+        lines = [
+            f"*Setup Summary* | {_mode()} | grade≥`{min_grade}`",
+            f"",
+            f"Engines: `{', '.join(active_engines) or 'RMR only'}`",
+            f"Symbols: `{len(config.SYMBOLS)}`"
+            + (f" (+expanded)" if getattr(config, "ENABLE_EXPANDED_SYMBOLS", False) else ""),
+            f"",
+            f"Funnel (all-time)",
+            f"  Scanned `{total}` → Rejected `{funnel['rejected']}` ({rej_pct}%)"
+            f" → Executed `{exec_n}`",
+            f"",
+            f"7d avg  — setups/day `{freq['avg_scanned_per_day_7d']:.1f}`"
+            f"  trades/day `{freq['avg_executed_per_day_7d']:.1f}`",
+        ]
+        by_strat = freq.get("by_strategy", {})
+        if by_strat:
+            lines.append("")
+            lines.append("*By Strategy*")
+            for strat, counts in sorted(by_strat.items(), key=lambda x: -x[1]["executed"]):
+                ep = round(counts["executed"] / max(counts["scanned"], 1) * 100)
+                lines.append(
+                    f"  `{strat}` — {counts['scanned']} scanned | {counts['executed']} executed ({ep}%)"
+                )
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /setups error: `{exc}`"
+
+
 # ── /help ─────────────────────────────────────────────────────────────────────
 
 def cmd_help() -> str:
@@ -625,6 +801,11 @@ def cmd_help() -> str:
         "/regimes — PnL breakdown by regime\n"
         "/grades — Trade grade distribution\n"
         "/rejections — Why trades are being rejected (filter/grade funnel)\n"
+        "/funnel — Setup funnel with grade breakdown\n"
+        "/frequency — Setups/day and trades/day (7d)\n"
+        "/strategies — Per-strategy scan/execute breakdown\n"
+        "/engines — Which setup engines are active\n"
+        "/setups — Combined setup summary (engines + funnel + frequency)\n"
         "\n"
         "_All commands restricted to authorised chat ID only._"
     )

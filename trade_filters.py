@@ -414,7 +414,7 @@ def filter_symbol_cooldown(symbol: str, now_utc: datetime) -> FilterResult:
                 name, False,
                 f"cooldown active: {int(remaining//3600)}h {int((remaining%3600)//60)}m remaining",
                 hard_fail=False,
-                grade_penalty=4,
+                grade_penalty=2,
             )
 
         del _cooldowns[symbol]

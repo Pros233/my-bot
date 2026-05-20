@@ -46,6 +46,7 @@ import trade_grader
 from executor import ExecutionEngine
 from strategies.range_mr import get_signal_2h, resample_1h_to_2h
 import rejection_analytics
+import setup_engines
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
@@ -103,7 +104,8 @@ class ScanResult:
     atr_pct: float = 0.0
     consensus: object = None   # con.ConsensusResult | None
     rmr: object = None         # RangeMRSignal | None
-    decision: str = "NO_DATA"  # BUY | RMR_LONG | HOLD | SKIP | NO_DATA
+    engine_signal: object = None  # EngineSignal | None
+    decision: str = "NO_DATA"  # BUY | RMR_LONG | ENGINE_LONG | HOLD | SKIP | NO_DATA
     rank_score: float = 0.0
     rank_reason: str = ""
     reject_reason: str = ""
@@ -185,6 +187,49 @@ def scan_symbol(
         )
     else:
         result.decision = "HOLD"
+
+    # ── Setup engines (all optional, never override existing signal) ──────────
+    if result.decision not in ("RMR_LONG", "BUY"):
+        _engine_checks = [
+            (config.ENABLE_PULLBACK_SETUP,       lambda: setup_engines.get_pullback_signal(df)),
+            (config.ENABLE_BREAKOUT_SETUP,        lambda: setup_engines.get_breakout_signal(df)),
+            (config.ENABLE_NY_MOMENTUM_SETUP,     lambda: setup_engines.get_ny_momentum_signal(df, now_utc)),
+            (config.ENABLE_MEAN_REVERSION_SETUP,  lambda: setup_engines.get_mean_reversion_signal(df)),
+        ]
+        for _enabled, _engine_fn in _engine_checks:
+            if not _enabled:
+                continue
+            try:
+                _esig = _engine_fn()
+                if _esig.direction == "LONG":
+                    result.decision     = "ENGINE_LONG"
+                    result.engine_signal = _esig
+                    result.rank_score   = 150.0 + _esig.rank_boost
+                    result.rank_reason  = f"[{_esig.engine}] {_esig.reason}"
+                    break
+            except Exception as _eng_exc:
+                logger.log_warning(f"SCAN | {symbol} | engine error (non-critical): {_eng_exc}")
+
+    # ── Soft 15m confirmation check ───────────────────────────────────────────
+    if (getattr(config, "ENABLE_15M_CONFIRMATION", False)
+            and result.decision in ("RMR_LONG", "BUY", "ENGINE_LONG")):
+        try:
+            _df15 = _fetch_candles_for(client, data_client, symbol)  # re-uses 1H; 15m not separately fetched here
+            _rsi15 = float(_df15["close"].ewm(span=14, adjust=False).mean().iloc[-1])
+            _ema21_15 = float(_df15["close"].ewm(span=21, adjust=False).mean().iloc[-1])
+            _close15  = float(_df15["close"].iloc[-1])
+            _caution = ""
+            if _rsi15 > 75:
+                _caution = f"15m-proxy RSI={_rsi15:.0f} > 75"
+            elif _close15 < _ema21_15:
+                _caution = f"15m-proxy close={_close15:.2f} < EMA21={_ema21_15:.2f}"
+            if _caution:
+                logger.log_info(
+                    f"15M_CAUTION | {symbol} | {_caution} — rank_score reduced by 15"
+                )
+                result.rank_score = max(0.0, result.rank_score - 15.0)
+        except Exception as _15m_exc:
+            logger.log_warning(f"15m check failed (non-critical): {_15m_exc}")
 
     return result
 
@@ -355,6 +400,11 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                 f"RMR skip [{r.rmr.signal_type}] ADX={r.adx:.1f}: "
                                 f"{r.rmr.reject_reason}"
                             )
+                        if r.engine_signal is not None and r.decision == "ENGINE_LONG":
+                            logger.log_info(
+                                f"ENGINE | {sym} | [{r.engine_signal.engine}] "
+                                f"{r.engine_signal.reason}"
+                            )
                     score_str = (
                         f"{r.consensus.score:.2f}/{r.consensus.max_possible:.2f} "
                         f"({r.consensus.ratio * 100:.1f}%)"
@@ -368,7 +418,7 @@ def live(client: Client, data_client: Client | None = None) -> None:
 
                 # ── Rank candidates ───────────────────────────────────────────
                 candidates = sorted(
-                    [r for r in results.values() if r.decision in ("BUY", "RMR_LONG")],
+                    [r for r in results.values() if r.decision in ("BUY", "RMR_LONG", "ENGINE_LONG")],
                     key=lambda r: r.rank_score,
                     reverse=True,
                 )
@@ -598,6 +648,90 @@ def live(client: Client, data_client: Client | None = None) -> None:
                         if not success:
                             logger.log_warning(f"Order failed for {best.symbol} — staying flat.")
 
+                    elif best.decision == "ENGINE_LONG":
+                        esig = best.engine_signal
+                        engine_params = risk.TradeParams(
+                            entry_price=esig.entry_price,
+                            effective_entry=esig.entry_price,
+                            stop_price=esig.stop_price,
+                            tp_price=esig.tp_price,
+                            stop_distance=esig.stop_distance,
+                            position_size=round(
+                                min(
+                                    balance * config.RISK_PER_TRADE / esig.stop_distance,
+                                    balance * config.MAX_POSITION_PCT / esig.entry_price,
+                                ),
+                                5,
+                            ),
+                            risk_amount=round(balance * config.RISK_PER_TRADE, 4),
+                            fee_estimate=0.0,
+                            halved=False,
+                        )
+                        logger.log_info(
+                            f"ENGINE LONG [{esig.engine}] | {best.symbol} | "
+                            f"entry={esig.entry_price:.2f} SL={esig.stop_price:.2f} "
+                            f"TP={esig.tp_price:.2f} | {esig.reason}"
+                        )
+                        _tg_approved = True
+                        if getattr(config, "MANUAL_APPROVAL_MODE", False):
+                            signal.alarm(0)
+                            _tg_detail = (
+                                f"ENGINE LONG [{esig.engine}] | `{best.symbol}`\n"
+                                f"Entry `${esig.entry_price:,.2f}` | SL `${esig.stop_price:,.2f}` "
+                                f"| TP `${esig.tp_price:,.2f}`\n{esig.reason}"
+                            )
+                            _tg_approved = telegram_bot.request_approval(
+                                best.symbol, _tg_detail,
+                                timeout=getattr(config, "MANUAL_APPROVAL_TIMEOUT", 300),
+                            )
+                            signal.alarm(max(90, 30 * len(symbols)))
+
+                        if _skip_trade or not _tg_approved:
+                            if not _tg_approved:
+                                logger.log_info(
+                                    f"ENGINE_LONG trade rejected via Telegram: {best.symbol}"
+                                )
+                            success = False
+                        else:
+                            success = engine.execute_buy(
+                                engine_params,
+                                strategy=esig.engine,
+                                regime=f"{best.trend}+{best.vol}",
+                                adx=best.adx,
+                                atr_pct=best.atr_pct,
+                                score_pct=best.consensus.ratio * 100.0 if best.consensus else 0.0,
+                                balance=balance,
+                            )
+                            if success and engine.position:
+                                engine.position.session     = _session_str
+                                engine.position.trade_grade = _grade
+                            if success:
+                                _ra_executed_sym = best.symbol
+                            if success and getattr(config, "ENABLE_TELEGRAM_BOT", False):
+                                try:
+                                    _pos = engine.position
+                                    if _pos:
+                                        from telegram_charts import generate_trade_chart
+                                        _chart = generate_trade_chart(
+                                            best.symbol, client,
+                                            _pos.fill_price, _pos.stop_price, _pos.tp_price,
+                                        )
+                                        if _chart:
+                                            telegram_bot.send_photo(
+                                                _chart,
+                                                caption=(
+                                                    f"*{best.symbol}* ENGINE LONG "
+                                                    f"[{esig.engine}] [{_grade}] "
+                                                    f"@ `${_pos.fill_price:,.2f}`"
+                                                ),
+                                            )
+                                except Exception as _tg_exc:
+                                    logger.log_warning(f"TG trade chart send failed: {_tg_exc}")
+                        if not success:
+                            logger.log_warning(
+                                f"ENGINE_LONG order failed for {best.symbol} — staying flat."
+                            )
+
                 # ── Dashboard for each symbol ─────────────────────────────────
                 for sym, r in results.items():
                     if r.consensus is None:
@@ -622,8 +756,14 @@ def live(client: Client, data_client: Client | None = None) -> None:
                 try:
                     _ra_session_now = trade_filters.hour_to_session(now_utc.hour)
                     for _ra_sym, _ra_r in results.items():
-                        _ra_is_candidate = _ra_r.decision in ("BUY", "RMR_LONG")
+                        _ra_is_candidate = _ra_r.decision in ("BUY", "RMR_LONG", "ENGINE_LONG")
                         _ra_is_best = bool(candidates) and candidates[0].symbol == _ra_sym
+                        _ra_strategy = (
+                            _ra_r.engine_signal.engine if _ra_r.engine_signal else
+                            "RMR" if _ra_r.decision == "RMR_LONG" else
+                            "CONSENSUS" if _ra_r.decision == "BUY" else
+                            "NONE"
+                        )
 
                         if not _ra_is_candidate:
                             # Rejected before reaching the candidate stage
@@ -632,6 +772,7 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                 session=_ra_session_now,
                                 rejected=True,
                                 reject_reason=_ra_r.reject_reason or _ra_r.decision,
+                                strategy=_ra_strategy,
                             )
                         elif _ra_is_best and not pause_manager.is_paused() and open_count < config.MAX_OPEN_TRADES:
                             # Best candidate — went through filter/grade pipeline
@@ -644,6 +785,7 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                 grade=_ra_grade,
                                 filter_hits=_ra_filter_hits,
                                 executed=_ra_did_exec,
+                                strategy=_ra_strategy,
                             )
                         else:
                             # Candidate but blocked: paused, position full, or lower rank
@@ -657,6 +799,7 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                 session=_ra_session_now,
                                 rejected=True,
                                 reject_reason=_ra_reason,
+                                strategy=_ra_strategy,
                             )
 
                     # Funnel log line (cumulative totals)

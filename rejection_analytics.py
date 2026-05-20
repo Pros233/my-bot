@@ -52,6 +52,7 @@ _state: dict = {
     "daily_scanned":      {},   # date_str     → count
     "daily_rejected":     {},   # date_str     → count
     "daily_executed":     {},   # date_str     → count
+    "by_strategy":        {},   # strategy_name → {"scanned": N, "executed": N, "rejected": N}
 }
 
 
@@ -102,6 +103,7 @@ def record_scan(
     grade: str = "",
     filter_hits: list[str] | None = None,
     executed: bool = False,
+    strategy: str = "",
 ) -> None:
     """
     Record one scanned setup.
@@ -115,6 +117,7 @@ def record_scan(
     grade         : Trade grade ("A+", "A", "B", "C", "REJECT"), if computed
     filter_hits   : Names of filters that did not pass
     executed      : True if an order was successfully placed
+    strategy      : Strategy/engine name ("RMR", "PULLBACK", "BREAKOUT", etc.)
     """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     with _lock:
@@ -139,6 +142,15 @@ def record_scan(
         if filter_hits:
             for f in filter_hits:
                 _inc(_state["filter_hits"], f)
+
+        if strategy:
+            if strategy not in _state["by_strategy"]:
+                _state["by_strategy"][strategy] = {"scanned": 0, "executed": 0, "rejected": 0}
+            _state["by_strategy"][strategy]["scanned"] += 1
+            if executed:
+                _state["by_strategy"][strategy]["executed"] += 1
+            if rejected:
+                _state["by_strategy"][strategy]["rejected"] += 1
 
     _save()
 
@@ -199,6 +211,36 @@ def get_funnel() -> dict:
         "grade_B":      grade_dist.get("B",  0),
         "grade_C":      grade_dist.get("C",  0),
         "grade_REJECT": grade_dist.get("REJECT", 0),
+    }
+
+
+def get_frequency_stats() -> dict:
+    """Return per-strategy scan/execute/reject breakdowns."""
+    with _lock:
+        by_strategy = {k: dict(v) for k, v in _state["by_strategy"].items()}
+        total_scanned  = _state["total_scanned"]
+        total_executed = _state["total_executed"]
+
+        # Setups per day (last 7 days average)
+        daily_scanned  = dict(_state["daily_scanned"])
+        daily_executed = dict(_state["daily_executed"])
+
+    days_7 = sorted(daily_scanned.keys())[-7:]
+    avg_scanned_per_day  = (
+        sum(daily_scanned.get(d, 0) for d in days_7) / len(days_7)
+        if days_7 else 0.0
+    )
+    avg_executed_per_day = (
+        sum(daily_executed.get(d, 0) for d in days_7) / len(days_7)
+        if days_7 else 0.0
+    )
+
+    return {
+        "total_scanned":          total_scanned,
+        "total_executed":         total_executed,
+        "avg_scanned_per_day_7d": round(avg_scanned_per_day, 1),
+        "avg_executed_per_day_7d": round(avg_executed_per_day, 1),
+        "by_strategy":            by_strategy,
     }
 
 
