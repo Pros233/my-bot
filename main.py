@@ -65,6 +65,8 @@ import social_sentiment
 import funding_arb
 import grid_engine
 import defi_signals
+import ml_scoring
+import websocket_feed
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
@@ -91,6 +93,28 @@ def fetch_candles(client: Client, data_client: Client | None = None) -> pd.DataF
     df = _klines_to_df(klines)
     # Drop the still-forming (unclosed) candle — last row
     return df.iloc[:-1]
+
+
+def _fetch_candles_interval(
+    client: Client,
+    data_client: Optional[Client],
+    symbol: str,
+    interval: str,
+    limit: int = 120,
+) -> pd.DataFrame:
+    """
+    Fetch OHLCV candles for any symbol/interval.
+    Returns empty DataFrame on any error (fail-open).
+    """
+    try:
+        klines = (data_client or client).get_klines(
+            symbol=symbol, interval=interval, limit=limit + 1
+        )
+        df = _klines_to_df(klines)
+        return df.iloc[:-1]   # drop still-forming candle
+    except Exception as exc:
+        logger.log_warning(f"_fetch_candles_interval({symbol},{interval}) error: {exc}")
+        return pd.DataFrame()
 
 
 def get_usdt_balance(client: Client) -> float:
@@ -223,7 +247,12 @@ def scan_symbol(
             (config.ENABLE_NY_MOMENTUM_SETUP,     lambda: setup_engines.get_ny_momentum_signal(df, now_utc)),
             (config.ENABLE_MEAN_REVERSION_SETUP,  lambda: setup_engines.get_mean_reversion_signal(df)),
             (getattr(config, "ENABLE_INTRADAY_SCALP", False),
-                                                  lambda: setup_engines.get_intraday_scalp_signal(df, now_utc)),
+                                                  lambda: setup_engines.get_intraday_scalp_signal(
+                                                      _fetch_candles_interval(client, data_client, symbol, "15m", 120)
+                                                      if getattr(config, "INTRADAY_SCALP_USE_15M", True)
+                                                      else df,
+                                                      now_utc,
+                                                  )),
         ]
         for _enabled, _engine_fn in _engine_checks:
             if not _enabled:
@@ -328,6 +357,13 @@ def live(client: Client, data_client: Client | None = None) -> None:
 
     # ── Start Telegram command bot daemon ────────────────────────────────────
     telegram_bot.start(client, engines)
+
+    # ── Start WebSocket live feed (background daemon, never blocks trading) ──
+    if getattr(config, "ENABLE_WEBSOCKET_FEED", False):
+        try:
+            websocket_feed.start(symbols)
+        except Exception as _ws_exc:
+            logger.log_warning(f"websocket_feed.start failed (non-critical): {_ws_exc}")
 
     # ── Initialise trade journal DB and print historical stats ────────────────
     trade_journal._ensure_db()
@@ -607,6 +643,23 @@ def live(client: Client, data_client: Client | None = None) -> None:
                         # DeFi ecosystem signal modifier
                         if getattr(config, "ENABLE_DEFI_SIGNALS", False):
                             _rc.rank_score += defi_signals.defi_signal_modifier(_rc.symbol)
+                        # ML trade scoring modifier
+                        if getattr(config, "ENABLE_ML_SCORING", False):
+                            try:
+                                _ml_grade = (
+                                    _rc.engine_signal.engine if _rc.engine_signal else
+                                    "RMR" if _rc.decision == "RMR_LONG" else "B"
+                                )
+                                _rc.rank_score += ml_scoring.ml_rank_modifier(
+                                    adx=_rc.adx,
+                                    atr_pct=_rc.atr_pct,
+                                    score_pct=_rc.consensus.ratio * 100.0 if _rc.consensus else 0.0,
+                                    grade=getattr(_rc, "trade_grade", "B") or "B",
+                                    session=trade_filters.hour_to_session(now_utc.hour),
+                                    regime=f"{_rc.trend}+{_rc.vol}",
+                                )
+                            except Exception:
+                                pass
                         # Learning memory modifier
                         if getattr(config, "ENABLE_LEARNING_MEMORY", False):
                             _regime_key = f"{_rc.trend}+{_rc.vol}"

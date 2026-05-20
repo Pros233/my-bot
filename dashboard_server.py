@@ -964,6 +964,18 @@ tr.clickable:hover td{background:#1c2128;cursor:pointer}
     <div id="intel-grid-list"><div class="nodata cd" style="font-size:11px">Loading&hellip;</div></div>
   </div>
 </div>
+<div class="g2" style="margin-bottom:10px">
+  <div class="card">
+    <div class="lbl">ML Trade Scoring</div>
+    <div class="val cy" id="intel-ml-status">—</div>
+    <div class="sub" id="intel-ml-detail">—</div>
+  </div>
+  <div class="card">
+    <div class="lbl">WebSocket Live Feed</div>
+    <div class="val" id="intel-ws-status">—</div>
+    <div id="intel-ws-prices" style="font-size:11px;margin-top:6px"></div>
+  </div>
+</div>
 
 <!-- H. Rejection Analytics -->
 <div class="stitle">Why Trades Are Being Rejected <span class="stitle-ts" id="rej-ts"></span></div>
@@ -1641,6 +1653,37 @@ async function loadAdvancedIntel() {
             <div class="sub">Hits: ${gs.hits||0} | Virtual PnL: <span class="${pnl>=0?'cg':'cr'}">${pnl>=0?'+':''}${pnl.toFixed(4)}</span></div>
           </div>`;
         }).join('');
+      }
+    }
+
+    // ML scoring status
+    const mlStatus = document.getElementById('intel-ml-status');
+    const mlDetail = document.getElementById('intel-ml-detail');
+    if (mlStatus && mlDetail) {
+      const ml = d.ml || {};
+      if (ml.ready) {
+        mlStatus.textContent = `READY`;
+        mlStatus.className   = 'val cg';
+        mlDetail.textContent = `${ml.n_trades} trades | acc ${(ml.cv_accuracy*100).toFixed(0)}% | wr ${(ml.win_rate*100).toFixed(0)}%`;
+      } else {
+        mlStatus.textContent = 'NOT TRAINED';
+        mlStatus.className   = 'val cd';
+        mlDetail.textContent = ml.message || `Need ${ml.min_trades||20}+ trades`;
+      }
+    }
+
+    // WebSocket feed status
+    const wsStatus = document.getElementById('intel-ws-status');
+    const wsPrices = document.getElementById('intel-ws-prices');
+    if (wsStatus) {
+      const ws = d.websocket || {};
+      const conn = ws.connected;
+      wsStatus.textContent = conn ? `CONNECTED (${ws.symbols_tracked||0} symbols)` : (ws.started ? 'RECONNECTING' : 'DISABLED');
+      wsStatus.className   = 'val ' + (conn ? 'cg' : 'cr');
+      if (wsPrices && ws.live_prices) {
+        wsPrices.innerHTML = Object.entries(ws.live_prices).map(([sym, price]) =>
+          `<span class="mono" style="margin-right:12px">${sym} <span class="cy">$${price.toLocaleString()}</span></span>`
+        ).join('');
       }
     }
 
@@ -2568,6 +2611,16 @@ def api_advanced_intel():
             result["defi"] = _ds.get_defi_summary()
         except Exception as exc:
             result["defi"] = {"error": str(exc)}
+        try:
+            import websocket_feed as _wsf
+            result["websocket"] = _wsf.get_feed_status()
+        except Exception as exc:
+            result["websocket"] = {"error": str(exc)}
+        try:
+            import ml_scoring as _ml
+            result["ml"] = _ml.get_model_summary()
+        except Exception as exc:
+            result["ml"] = {"error": str(exc)}
         return result
     return jsonify(_cached("advanced_intel", _build, 60.0) or {})
 

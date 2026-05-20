@@ -671,6 +671,12 @@ def _handle_command(cmd: str, args: list) -> None:
     elif cmd == "intel":
         _send_text(tc.cmd_intel_summary())
 
+    elif cmd == "mlscore":
+        _send_text(tc.cmd_mlscore())
+
+    elif cmd == "wsfeed":
+        _send_text(tc.cmd_wsfeed())
+
     elif cmd == "help":
         _send_text(tc.cmd_help())
 

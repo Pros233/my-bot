@@ -1489,6 +1489,8 @@ def cmd_help() -> str:
         "/defi — DeFi ecosystem: TVL momentum + top yield pools\n"
         "/social — Social sentiment: trending coins + Fear/Greed index\n"
         "/intel — Combined hourly intel: trending coins + arb opportunities\n"
+        "/mlscore — ML trade scoring model status and accuracy\n"
+        "/wsfeed — WebSocket live feed status and live prices\n"
         "\n"
         "_All commands restricted to authorised chat ID only._"
     )
@@ -1739,3 +1741,76 @@ def cmd_intel_summary() -> str:
         return "\n".join(lines)
     except Exception as exc:
         return f"*Intel*: error — `{exc}`"
+
+
+# ── /mlscore ─────────────────────────────────────────────────────────────────
+
+def cmd_mlscore() -> str:
+    try:
+        import ml_scoring as _ml
+        import config as _cfg
+        enabled = getattr(_cfg, "ENABLE_ML_SCORING", False)
+        lines = ["*ML Trade Scoring*"]
+        lines.append(f"Status: `{'ENABLED' if enabled else 'DISABLED'}`")
+        lines.append("Model: `Logistic Regression (sklearn)`")
+
+        summary = _ml.get_model_summary()
+        if not summary.get("ready"):
+            msg = summary.get("message", f"Need {summary.get('min_trades', 20)}+ trades to train")
+            lines.append(f"\nModel: `NOT TRAINED`")
+            lines.append(f"_{msg}_")
+            lines.append(f"\nTrain with: `python3 ml_scoring.py --train`")
+        else:
+            lines.append(f"\nModel: `READY`")
+            lines.append(f"Trained on: `{summary['n_trades']} trades`")
+            lines.append(f"Win rate: `{summary['win_rate']:.1%}`")
+            lines.append(f"CV accuracy: `{summary['cv_accuracy']:.1%}`")
+            lines.append(f"Trained at: `{summary.get('trained_at','?')[:16]}`")
+            lines.append(f"\nFeatures: `{' | '.join(summary.get('features', []))}`")
+            lines.append(f"Rank modifier range: `-15 to +15`")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"*ML Score*: error — `{exc}`"
+
+
+# ── /wsfeed ───────────────────────────────────────────────────────────────────
+
+def cmd_wsfeed() -> str:
+    try:
+        import websocket_feed as _wsf
+        import config as _cfg
+        enabled = getattr(_cfg, "ENABLE_WEBSOCKET_FEED", False)
+        lines = ["*WebSocket Live Feed*"]
+        lines.append(f"Status: `{'ENABLED' if enabled else 'DISABLED'}`")
+        lines.append("Source: `Binance combined stream`")
+
+        status = _wsf.get_feed_status()
+        connected  = status.get("connected", False)
+        n_tracked  = status.get("symbols_tracked", 0)
+        last_msg   = status.get("last_message_s")
+        reconnects = status.get("reconnect_count", 0)
+
+        lines.append(f"\nConnection: `{'CONNECTED' if connected else 'DISCONNECTED'}`")
+        lines.append(f"Symbols: `{n_tracked}` tracked")
+        if last_msg is not None:
+            lines.append(f"Last message: `{last_msg:.0f}s ago`")
+        if reconnects:
+            lines.append(f"Reconnects: `{reconnects}`")
+
+        prices = status.get("live_prices", {})
+        if prices:
+            lines.append("\n*Live Prices*")
+            for sym, price in prices.items():
+                lines.append(f"`{sym}`: `${price:,.2f}`")
+
+        tickers = status.get("tickers_24h", {})
+        if tickers:
+            lines.append("\n*24h Changes*")
+            for sym, t in tickers.items():
+                chg = t.get("change_24h", 0.0)
+                cls = "+" if chg >= 0 else ""
+                lines.append(f"`{sym}`: `{cls}{chg:.2f}%`")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"*WSFeed*: error — `{exc}`"

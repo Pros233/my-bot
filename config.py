@@ -385,6 +385,15 @@ ENABLE_TELEGRAM_PDF_REPORT: bool = _bool("ENABLE_TELEGRAM_PDF_REPORT", False)
 # Hourly market summary interval (hours, 0 = disabled)
 TELEGRAM_SUMMARY_INTERVAL_HOURS: int = _int("TELEGRAM_SUMMARY_INTERVAL_HOURS", 1)
 
+# ── ML scoring ────────────────────────────────────────────────────────────────
+ENABLE_ML_SCORING: bool = _bool("ENABLE_ML_SCORING", False)
+
+# ── WebSocket live feed ───────────────────────────────────────────────────────
+ENABLE_WEBSOCKET_FEED: bool = _bool("ENABLE_WEBSOCKET_FEED", False)
+
+# ── Intraday scalp: use real 15m candles (true) or 1H proxy (false) ──────────
+INTRADAY_SCALP_USE_15M: bool = _bool("INTRADAY_SCALP_USE_15M", True)
+
 # ── Multi-pair scanner ────────────────────────────────────────────────────────
 _SYMBOLS_RAW: str = os.getenv("SYMBOLS", "")
 SYMBOLS: list[str] = (
