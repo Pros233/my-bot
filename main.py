@@ -665,6 +665,20 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                 logger.log_info(
                                     f"PORTFOLIO_BRAIN | {best.symbol} | blocked: {_pb_reason}"
                                 )
+                                if getattr(config, "ENABLE_TELEGRAM_BOT", False):
+                                    try:
+                                        _pb_summary = portfolio_brain.get_portfolio_summary(
+                                            _open_syms, balance
+                                        )
+                                        _pb_msg = (
+                                            f"*Portfolio Brain* ⚠\n"
+                                            f"`{best.symbol}` blocked — {_pb_reason}\n"
+                                            f"Health: `{_pb_summary.get('health_score', 0):.0f}/100` "
+                                            f"[{_pb_summary.get('health_label', '?')}]"
+                                        )
+                                        telegram_bot.send_rejection_summary(_pb_msg)
+                                    except Exception:
+                                        pass
                         except Exception as _pb_exc:
                             logger.log_warning(f"portfolio_brain check error (non-critical): {_pb_exc}")
 
