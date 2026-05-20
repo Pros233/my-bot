@@ -982,6 +982,60 @@ tr.clickable:hover td{background:#1c2128;cursor:pointer}
   </div>
 </div>
 
+<!-- J. Engine Leaderboard -->
+<div class="stitle">Engine Leaderboard <span class="stitle-ts" id="leader-ts"></span></div>
+<div class="g4" id="leader-top-stats" style="margin-bottom:10px">
+  <div class="card"><div class="lbl">Best Engine</div><div class="val cg" id="leader-best">—</div></div>
+  <div class="card"><div class="lbl">Best Expectancy</div><div class="val cg" id="leader-best-exp">—</div></div>
+  <div class="card"><div class="lbl">Worst Engine</div><div class="val cr" id="leader-worst">—</div></div>
+  <div class="card"><div class="lbl">Engines w/ Data</div><div class="val cy" id="leader-count">—</div></div>
+</div>
+<div class="card" style="margin-bottom:10px">
+  <div class="lbl" style="margin-bottom:8px">Engine Rankings (60d)</div>
+  <div id="leader-table"><div class="nodata cd">No trade data yet — engines are learning</div></div>
+</div>
+
+<!-- K. Market State Panel -->
+<div class="stitle">Market State <span class="stitle-ts" id="mstate-ts"></span></div>
+<div class="g4" id="mstate-cards" style="margin-bottom:10px">
+  <div class="card"><div class="lbl">Primary State</div><div class="val cy" id="mstate-primary">—</div></div>
+  <div class="card"><div class="lbl">Trend Quality</div><div class="val" id="mstate-trend">—</div></div>
+  <div class="card"><div class="lbl">Volatility</div><div class="val" id="mstate-vol">—</div></div>
+  <div class="card"><div class="lbl">Liquidity</div><div class="val" id="mstate-liq">—</div></div>
+</div>
+<div class="g2" style="margin-bottom:10px">
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Best Engines for Current State</div>
+    <div id="mstate-best-engines"><div class="nodata cd">No data yet</div></div>
+  </div>
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Adaptive State</div>
+    <div id="mstate-adaptive"><div class="nodata cd">No data yet</div></div>
+  </div>
+</div>
+
+<!-- L. Equity Protection Panel -->
+<div class="stitle">Equity Protection <span class="stitle-ts" id="eqprot-ts"></span></div>
+<div class="g4" id="eqprot-cards" style="margin-bottom:10px">
+  <div class="card"><div class="lbl">Protection State</div><div class="val cy" id="eqprot-state">—</div></div>
+  <div class="card"><div class="lbl">Max Drawdown</div><div class="val cr" id="eqprot-dd">—</div></div>
+  <div class="card"><div class="lbl">Tightening Active</div><div class="val" id="eqprot-tight">—</div></div>
+  <div class="card"><div class="lbl">Effective Grade</div><div class="val cy" id="eqprot-grade">—</div></div>
+</div>
+
+<!-- M. Correlation Panel -->
+<div class="stitle">Correlation Guard <span class="stitle-ts" id="corr-ts"></span></div>
+<div class="g2" style="margin-bottom:10px">
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Open Position Clusters</div>
+    <div id="corr-exposure"><div class="nodata cd">No open positions</div></div>
+  </div>
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Guard Config</div>
+    <div id="corr-config"><div class="nodata cd">Loading…</div></div>
+  </div>
+</div>
+
 <!-- Bot Log -->
 <div class="stitle">Bot Log <span class="stitle-ts" id="log-ts"></span></div>
 <div class="log-box" id="log-box"><span class="cd">Loading&hellip;</span></div>
@@ -1548,6 +1602,105 @@ async function loadRejections() {
   } catch(e) {}
 }
 
+/* ── J/K/L/M. Intelligence panels: loadIntelligence ── */
+async function loadIntelligence() {
+  try {
+    const d = await fetch('/api/intelligence').then(r => r.json());
+    if (!d) return;
+    const ts = new Date().toLocaleTimeString();
+
+    // ── J. Engine Leaderboard ──
+    document.getElementById('leader-ts').textContent = ts;
+    const ranked = d.ranked || [];
+    const withData = ranked.filter(r => r.trades > 0);
+    document.getElementById('leader-count').textContent = withData.length + ' / ' + ranked.length;
+
+    if (d.best_engine) {
+      const best = ranked.find(r => r.engine === d.best_engine);
+      document.getElementById('leader-best').textContent = d.best_engine;
+      document.getElementById('leader-best-exp').textContent = best ? (best.expectancy >= 0 ? '+' : '') + best.expectancy.toFixed(4) : '—';
+    }
+    if (d.worst_engine) {
+      document.getElementById('leader-worst').textContent = d.worst_engine;
+    }
+
+    const tableEl = document.getElementById('leader-table');
+    if (withData.length === 0) {
+      tableEl.innerHTML = '<div class="nodata cd">No trade data yet — engines are learning…</div>';
+    } else {
+      const rows = ranked.map((r, i) => {
+        if (r.trades === 0) return `<div style="font-size:11px;color:#484f58;margin:2px 0">${i+1}. <code>${r.engine}</code> — no trades yet</div>`;
+        const scoreColor = r.score >= 65 ? '#3fb950' : r.score >= 40 ? '#e3b341' : '#f85149';
+        const bar = '█'.repeat(Math.round(r.score / 10));
+        const dis = r.disabled ? ' <span style="color:#f85149">[disabled]</span>' : '';
+        return `<div style="font-size:11px;margin:3px 0;border-bottom:1px solid #21262d;padding-bottom:3px">
+          <b style="color:${scoreColor}">${i+1}.</b> <code style="color:#79c0ff">${r.engine}</code>${dis}
+          <span style="color:${scoreColor}">${bar}</span> <b style="color:${scoreColor}">${r.score.toFixed(0)}</b>
+          &nbsp;|&nbsp; ${r.trades}T &nbsp;|&nbsp; exp <code style="color:${r.expectancy>=0?'#3fb950':'#f85149'}">${r.expectancy>=0?'+':''}${r.expectancy.toFixed(4)}</code>
+          &nbsp;|&nbsp; WR ${(r.win_rate*100).toFixed(0)}% &nbsp;|&nbsp; PF ${r.profit_factor.toFixed(2)} &nbsp;|&nbsp; DD ${r.max_drawdown_pct.toFixed(1)}%
+        </div>`;
+      });
+      tableEl.innerHTML = rows.join('');
+    }
+
+    // ── K. Market State ──
+    document.getElementById('mstate-ts').textContent = ts;
+    const eq = d.equity || {};
+    const adapt = d.adaptive || {};
+
+    // Adaptive state
+    const epState = eq.state || 'normal';
+    const stateColor = epState === 'defensive' ? '#f85149' : epState === 'selective' ? '#e3b341' : '#3fb950';
+    const adaptEl = document.getElementById('mstate-adaptive');
+    adaptEl.innerHTML = `
+      <div style="font-size:12px;margin:2px 0">Mode: <b style="color:${stateColor}">${epState.toUpperCase()}</b></div>
+      <div style="font-size:11px;color:#8b949e;margin:2px 0">Engine weighting: ${adapt.engine_weighting ? '<span style="color:#e3b341">ON</span>' : 'off'}</div>
+      <div style="font-size:11px;color:#8b949e;margin:2px 0">Equity protection: ${adapt.equity_protection ? '<span style="color:#e3b341">ON</span>' : 'off'}</div>
+      <div style="font-size:11px;color:#8b949e;margin:2px 0">Auto-disable: ${adapt.auto_disable ? '<span style="color:#e3b341">ON</span>' : 'off'}</div>
+      <div style="font-size:11px;color:#8b949e;margin:2px 0">Min grade: <code>${adapt.min_grade || '?'}</code> → effective: <code>${eq.effective_grade || adapt.min_grade || '?'}</code></div>
+    `;
+
+    // Affinity table
+    const affEl = document.getElementById('mstate-best-engines');
+    const aff = (d.market_state || {}).affinity_table || {};
+    if (Object.keys(aff).length > 0) {
+      affEl.innerHTML = Object.entries(aff).map(([state, engs]) =>
+        `<div style="font-size:11px;margin:2px 0"><code style="color:#79c0ff">${state}</code> → ${engs.map(e => `<code>${e}</code>`).join(', ')}</div>`
+      ).join('');
+    }
+
+    // State cards — pull from equity data as proxy
+    document.getElementById('mstate-primary').textContent = epState === 'defensive' ? 'Risk-Off Mode' : epState === 'selective' ? 'Selective Mode' : 'Normal';
+    document.getElementById('mstate-trend').textContent = '—';
+    document.getElementById('mstate-vol').textContent = '—';
+    document.getElementById('mstate-liq').textContent = 'good';
+
+    // ── L. Equity Protection ──
+    document.getElementById('eqprot-ts').textContent = ts;
+    document.getElementById('eqprot-state').textContent = (eq.state || 'normal').toUpperCase();
+    document.getElementById('eqprot-state').style.color = stateColor;
+    document.getElementById('eqprot-dd').textContent = (eq.max_drawdown_pct || 0).toFixed(2) + '%';
+    document.getElementById('eqprot-tight').textContent = eq.tightening_active ? 'YES' : 'No';
+    document.getElementById('eqprot-tight').style.color = eq.tightening_active ? '#f85149' : '#3fb950';
+    document.getElementById('eqprot-grade').textContent = eq.effective_grade || '?';
+
+    // ── M. Correlation ──
+    document.getElementById('corr-ts').textContent = ts;
+    const corr = d.correlation || {};
+    document.getElementById('corr-config').innerHTML = `
+      <div style="font-size:12px;margin:2px 0">Guard: <b>${corr.guard_enabled ? '<span style="color:#3fb950">ON</span>' : 'off'}</b></div>
+      <div style="font-size:12px;margin:2px 0">Max correlated: <code>${corr.max_correlated || 2}</code></div>
+      <div style="font-size:11px;color:#8b949e;margin-top:6px">Clusters:</div>
+      ${Object.entries(corr.clusters || {}).map(([k, v]) =>
+        `<div style="font-size:10px;color:#8b949e"><code>${k}</code>: ${v.map(s=>s.replace('USDT','')).join(', ')}</div>`
+      ).join('')}
+    `;
+    // Exposure is populated by positions — show placeholder
+    document.getElementById('corr-exposure').innerHTML = '<div style="font-size:11px;color:#8b949e">Exposure updates when positions are open.</div>';
+
+  } catch(e) {}
+}
+
 /* ── I. Setup Engines & Frequency: loadEngines ── */
 async function loadEngines() {
   try {
@@ -1610,6 +1763,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadTrends();
   loadRejections();
   loadEngines();
+  loadIntelligence();
   loadLogs();
   connectSSE();
   updateFooter();
@@ -1623,7 +1777,8 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(loadTrends,      60_000);   // trending coins
   setInterval(loadCharts,      60_000);   // price charts
   setInterval(loadRejections, 120_000);   // rejection analytics
-  setInterval(loadEngines,   120_000);   // engines & frequency
+  setInterval(loadEngines,      120_000);   // engines & frequency
+  setInterval(loadIntelligence, 120_000);   // leaderboard, equity, correlation
   setInterval(loadEquity,     120_000);   // equity curve
   setInterval(loadHeatmap,    300_000);   // signal heatmap
   setInterval(updateFooter,    60_000);   // footer clock
@@ -1793,6 +1948,86 @@ def api_summary():
 @login_required
 def api_rejections():
     return jsonify(_cached("rejections", _fetch_rejection_analytics, 30.0) or {})
+
+
+@app.route("/api/intelligence")
+@login_required
+def api_intelligence():
+    """Leaderboard + market state + equity protection + correlation data."""
+    def _build():
+        import config as cfg
+
+        # Engine leaderboard
+        try:
+            import engine_ranker as er
+            import engine_performance as ep
+            ranked = er.rank_engines(days=60)
+            best_eng = er.best_engine(days=60)
+            worst_eng = er.worst_engine(days=60)
+        except Exception:
+            ranked, best_eng, worst_eng = [], None, None
+
+        # Market state — use BTCUSDT scan result if available via rejection_analytics
+        market_state_data = {}
+        try:
+            import market_state as ms
+            import engine_performance as ep
+            # Return affinity table for UI reference
+            affinities = {}
+            for state_name in [
+                ms.STRONG_TREND, ms.RANGING, ms.MEAN_REV_FAVORABLE,
+                ms.VOL_EXPANSION, ms.MOMENTUM_EXPANSION, ms.VOL_COMPRESSION,
+            ]:
+                import dataclasses
+                dummy = ms.MarketState(
+                    state=state_name, trend_quality="moderate",
+                    vol_state="normal", liquidity="good", momentum="neutral",
+                    adx=25.0, atr_pct=0.5, bb_width_pctile=0.5, vol_ratio=1.0,
+                )
+                affinities[state_name] = ms.best_engines_for_state(dummy)[:3]
+            market_state_data = {"affinity_table": affinities}
+        except Exception:
+            pass
+
+        # Equity protection
+        eq_data = {}
+        try:
+            import equity_protection as ep2
+            eq_data = ep2.get_summary()
+        except Exception:
+            pass
+
+        # Correlation
+        corr_data = {}
+        try:
+            import correlation_guard as cg
+            corr_data = {
+                "guard_enabled": getattr(cfg, "ENABLE_CORRELATION_GUARD", True),
+                "max_correlated": getattr(cfg, "MAX_CORRELATED_POSITIONS", 2),
+                "clusters": {k: v for k, v in cg._CLUSTERS.items()},
+            }
+        except Exception:
+            pass
+
+        # Adaptive flags
+        adaptive = {
+            "engine_weighting": getattr(cfg, "ENABLE_ADAPTIVE_ENGINE_WEIGHTING", False),
+            "equity_protection": getattr(cfg, "ENABLE_EQUITY_PROTECTION", False),
+            "adaptive_grades":   getattr(cfg, "ENABLE_ADAPTIVE_GRADES", False),
+            "auto_disable":      getattr(cfg, "ENABLE_AUTO_DISABLE_ENGINES", False),
+            "min_grade":         getattr(cfg, "MIN_TRADE_GRADE", "A"),
+        }
+
+        return {
+            "ranked":      ranked,
+            "best_engine": best_eng,
+            "worst_engine": worst_eng,
+            "market_state": market_state_data,
+            "equity":      eq_data,
+            "correlation": corr_data,
+            "adaptive":    adaptive,
+        }
+    return jsonify(_cached("intelligence", _build, 60.0) or {})
 
 
 @app.route("/api/engines")

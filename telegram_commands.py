@@ -595,6 +595,277 @@ def cmd_rejections() -> str:
         return f"⚠ /rejections error: `{exc}`"
 
 
+# ── /enginerank ───────────────────────────────────────────────────────────────
+
+def cmd_enginerank() -> str:
+    """Engine leaderboard ranked by health score."""
+    try:
+        import engine_ranker as er
+        ranked = er.rank_engines(days=60)
+        if not ranked:
+            return "*Engine Ranking*: no trade data yet."
+
+        lines = [f"*Engine Leaderboard* | {_mode()} | last 60d"]
+        for i, r in enumerate(ranked, 1):
+            n = r["trades"]
+            if n == 0:
+                lines.append(f"  {i}. `{r['engine']}` — no trades yet")
+                continue
+            disabled = " [DISABLED]" if r["disabled"] else ""
+            lines.append(
+                f"  {i}. `{r['engine']}`{disabled} | score `{r['score']:.0f}`\n"
+                f"     trades={n} | exp=`{r['expectancy']:+.4f}` | "
+                f"WR={r['win_rate']*100:.0f}% | PF={r['profit_factor']:.2f} | "
+                f"DD={r['max_drawdown_pct']:.1f}%"
+            )
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /enginerank error: `{exc}`"
+
+
+# ── /marketstate ──────────────────────────────────────────────────────────────
+
+def cmd_marketstate() -> str:
+    """Current market state for all scanned symbols."""
+    try:
+        import market_state as ms
+
+        # Pull latest scan results from rejection_analytics (best proxy without live scan)
+        lines = [f"*Market State* | {_mode()}"]
+        lines.append(
+            "_Market state is computed per-symbol each scan cycle "
+            "and logged to the bot log. Use /status or check the dashboard "
+            "for the live panel._"
+        )
+
+        # Show engine affinity for common states
+        lines.append("")
+        lines.append("*Engine Affinity Reference*")
+        for state_name in [
+            ms.STRONG_TREND, ms.RANGING, ms.MEAN_REV_FAVORABLE,
+            ms.VOL_EXPANSION, ms.MOMENTUM_EXPANSION,
+        ]:
+            import dataclasses
+            dummy = ms.MarketState(
+                state=state_name, trend_quality="moderate",
+                vol_state="normal", liquidity="good", momentum="neutral",
+                adx=25.0, atr_pct=0.5, bb_width_pctile=0.5, vol_ratio=1.0,
+            )
+            best = ms.best_engines_for_state(dummy)[:3]
+            lines.append(f"  `{state_name}` → best: {', '.join(f'`{e}`' for e in best)}")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /marketstate error: `{exc}`"
+
+
+# ── /expectancy ───────────────────────────────────────────────────────────────
+
+def cmd_expectancy() -> str:
+    """Per-engine expectancy breakdown."""
+    try:
+        import engine_performance as ep
+        all_stats = ep.get_all_stats(days=60)
+
+        lines = [f"*Engine Expectancy* | {_mode()} | last 60d"]
+        for engine in ep.ENGINE_NAMES:
+            s = all_stats[engine]
+            n = s["trades"]
+            if n == 0:
+                lines.append(f"  `{engine}` — no trades")
+                continue
+            lines.append(
+                f"  `{engine}` ({n}T)\n"
+                f"    exp=`{s['expectancy']:+.4f}` | PF=`{s['profit_factor']:.2f}` "
+                f"| WR=`{s['win_rate']*100:.0f}%` | Sharpe=`{s['sharpe_ratio']:.2f}`"
+            )
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /expectancy error: `{exc}`"
+
+
+# ── /leaderboard ──────────────────────────────────────────────────────────────
+
+def cmd_leaderboard() -> str:
+    """Full engine leaderboard with learning summary."""
+    try:
+        import engine_performance as ep
+        import engine_ranker as er
+        from datetime import datetime, timezone
+
+        ranked = er.rank_engines(days=30)
+        all_stats_90 = ep.get_all_stats(days=90)
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        lines = [f"*Engine Learning Summary* | {now}"]
+
+        if not any(r["trades"] > 0 for r in ranked):
+            lines.append("_No trade data yet — engines are learning…_")
+            return "\n".join(lines)
+
+        best = er.best_engine(days=30)
+        worst = er.worst_engine(days=30)
+        if best:
+            bs = all_stats_90[best]
+            lines.append(f"Best engine: `{best}` | exp `{bs['expectancy']:+.4f}` | WR {bs['win_rate']*100:.0f}%")
+        if worst and worst != best:
+            ws = all_stats_90[worst]
+            lines.append(f"Worst engine: `{worst}` | exp `{ws['expectancy']:+.4f}` | WR {ws['win_rate']*100:.0f}%")
+        lines.append("")
+
+        for r in ranked:
+            if r["trades"] == 0:
+                continue
+            flag = " [disabled]" if r["disabled"] else ""
+            lines.append(
+                f"  `{r['engine']}`{flag} score=`{r['score']:.0f}` "
+                f"| {r['trades']}T | exp=`{r['expectancy']:+.4f}` "
+                f"| PF=`{r['profit_factor']:.2f}`"
+            )
+
+        # Adaptive state
+        try:
+            import equity_protection as ep2
+            ep_sum = ep2.get_summary()
+            lines.append("")
+            lines.append(
+                f"Equity protection: `{ep_sum['state'].upper()}`"
+                + (f" → grade≥`{ep_sum['effective_grade']}`" if ep_sum['tightening_active'] else "")
+            )
+        except Exception:
+            pass
+
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /leaderboard error: `{exc}`"
+
+
+# ── /correlation ──────────────────────────────────────────────────────────────
+
+def cmd_correlation(engines: dict = None) -> str:
+    """Current symbol correlations and open position exposure."""
+    try:
+        import correlation_guard as cg
+
+        open_syms = []
+        if engines:
+            open_syms = [s for s, e in engines.items() if e.has_open_position()]
+
+        exposure = cg.get_exposure_summary(open_syms)
+        max_corr  = getattr(config, "MAX_CORRELATED_POSITIONS", 2)
+        guard_on  = getattr(config, "ENABLE_CORRELATION_GUARD", True)
+
+        lines = [
+            f"*Correlation Exposure* | {_mode()}",
+            f"Guard: `{'ON' if guard_on else 'OFF'}` | max_correlated=`{max_corr}`",
+            "",
+        ]
+
+        if not open_syms:
+            lines.append("Open positions: `none`")
+        else:
+            lines.append(f"Open: `{', '.join(open_syms)}`")
+            lines.append("")
+            lines.append("*Cluster Exposure*")
+            for cluster, syms in sorted(exposure.items()):
+                risk_flag = " ⚠" if len(syms) >= max_corr else ""
+                lines.append(f"  `{cluster}`{risk_flag}: {', '.join(f'`{s}`' for s in syms)}")
+
+        lines.append("")
+        lines.append("*Cluster Map*")
+        for cluster, syms in sorted(cg._CLUSTERS.items()):
+            lines.append(f"  `{cluster}`: {', '.join(s.replace('USDT','') for s in syms)}")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /correlation error: `{exc}`"
+
+
+# ── /equity ───────────────────────────────────────────────────────────────────
+
+def cmd_equity() -> str:
+    """Equity protection state and drawdown summary."""
+    try:
+        import equity_protection as ep
+        s = ep.get_summary()
+
+        state_icon = {"normal": "✅", "selective": "⚠", "defensive": "🛑"}.get(s["state"], "?")
+        lines = [
+            f"*Equity Protection* | {_mode()}",
+            f"Enabled: `{'YES' if s['enabled'] else 'No'}`",
+            f"State: {state_icon} `{s['state'].upper()}`",
+            f"Base grade: `{s.get('base_grade', '?')}`",
+            f"Effective grade: `{s.get('effective_grade', '?')}`",
+            f"Tightening: `{'YES' if s['tightening_active'] else 'No'}`",
+            "",
+            f"Consec losses: `{s.get('consecutive_losses', 0)}`",
+            f"Consec wins:   `{s.get('consecutive_wins', 0)}`",
+            f"Max drawdown:  `{s.get('max_drawdown_pct', 0.0):.2f}%`",
+            f"Daily PnL:     `{_usdt(s.get('daily_pnl', 0.0))}`",
+            f"Weekly PnL:    `{_usdt(s.get('weekly_pnl', 0.0))}`",
+        ]
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /equity error: `{exc}`"
+
+
+# ── /health ───────────────────────────────────────────────────────────────────
+
+def cmd_health() -> str:
+    """Full system health: engines, equity, correlation, adaptive state."""
+    try:
+        import engine_ranker as er
+        import equity_protection as ep
+        import correlation_guard as cg
+
+        lines = [f"*System Health* | {_mode()}"]
+
+        # Adaptive weighting
+        adapt_on = getattr(config, "ENABLE_ADAPTIVE_ENGINE_WEIGHTING", False)
+        auto_dis  = getattr(config, "ENABLE_AUTO_DISABLE_ENGINES", False)
+        eq_prot   = getattr(config, "ENABLE_EQUITY_PROTECTION", False)
+        lines.append(
+            f"\nAdaptive weighting: `{'ON' if adapt_on else 'off'}` | "
+            f"Auto-disable: `{'ON' if auto_dis else 'off'}` | "
+            f"Eq protection: `{'ON' if eq_prot else 'off'}`"
+        )
+
+        # Engine scores
+        ranked = er.rank_engines(days=60)
+        lines.append("\n*Engine Health Scores*")
+        for r in ranked:
+            n = r["trades"]
+            bar = "█" * int(r["score"] / 10)
+            dis = " [off]" if r["disabled"] else ""
+            lines.append(
+                f"  `{r['engine']:12s}`{dis} {bar} `{r['score']:.0f}`"
+                + (f" ({n}T)" if n > 0 else " (no data)")
+            )
+
+        # Equity protection
+        ep_sum = ep.get_summary()
+        lines.append(
+            f"\n*Equity*: `{ep_sum['state'].upper()}` | "
+            f"DD=`{ep_sum.get('max_drawdown_pct', 0.0):.2f}%` | "
+            f"grade≥`{ep_sum.get('effective_grade', '?')}`"
+        )
+
+        # Correlation
+        guard_on = getattr(config, "ENABLE_CORRELATION_GUARD", True)
+        max_corr = getattr(config, "MAX_CORRELATED_POSITIONS", 2)
+        lines.append(
+            f"*Correlation*: guard=`{'ON' if guard_on else 'off'}` | "
+            f"max_correlated=`{max_corr}`"
+        )
+
+        # Min grade
+        min_grade = getattr(config, "MIN_TRADE_GRADE", "A")
+        lines.append(f"*Min grade*: `{min_grade}` | effective=`{ep_sum.get('effective_grade', min_grade)}`")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"⚠ /health error: `{exc}`"
+
+
 # ── /funnel ───────────────────────────────────────────────────────────────────
 
 def cmd_funnel() -> str:
@@ -801,6 +1072,13 @@ def cmd_help() -> str:
         "/regimes — PnL breakdown by regime\n"
         "/grades — Trade grade distribution\n"
         "/rejections — Why trades are being rejected (filter/grade funnel)\n"
+        "/enginerank — Engine leaderboard ranked by health score\n"
+        "/expectancy — Per-engine expectancy breakdown\n"
+        "/leaderboard — Full engine learning summary\n"
+        "/marketstate — Market state reference and engine affinity\n"
+        "/correlation — Correlated position exposure\n"
+        "/equity — Equity protection state and drawdown\n"
+        "/health — Full system health (engines, equity, correlation)\n"
         "/funnel — Setup funnel with grade breakdown\n"
         "/frequency — Setups/day and trades/day (7d)\n"
         "/strategies — Per-strategy scan/execute breakdown\n"

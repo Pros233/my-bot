@@ -580,6 +580,27 @@ def _handle_command(cmd: str, args: list) -> None:
     elif cmd == "rejections":
         _send_text(tc.cmd_rejections())
 
+    elif cmd == "enginerank":
+        _send_text(tc.cmd_enginerank())
+
+    elif cmd == "marketstate":
+        _send_text(tc.cmd_marketstate())
+
+    elif cmd == "expectancy":
+        _send_text(tc.cmd_expectancy())
+
+    elif cmd == "leaderboard":
+        _send_text(tc.cmd_leaderboard())
+
+    elif cmd == "correlation":
+        _send_text(tc.cmd_correlation(_engines))
+
+    elif cmd == "equity":
+        _send_text(tc.cmd_equity())
+
+    elif cmd == "health":
+        _send_text(tc.cmd_health())
+
     elif cmd == "funnel":
         _send_text(tc.cmd_funnel())
 

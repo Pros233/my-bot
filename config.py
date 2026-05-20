@@ -291,6 +291,23 @@ if MIN_TRADE_GRADE not in ("A+", "A", "B", "C"):
 # Adaptive filters: tighten grade after drawdowns, relax after stable performance
 ENABLE_ADAPTIVE_FILTERS: bool = _bool("ENABLE_ADAPTIVE_FILTERS", False)
 
+# ── Adaptive intelligence layer ───────────────────────────────────────────────
+# Engine ranking: prioritise strong engines, downweight weak ones
+ENABLE_ADAPTIVE_ENGINE_WEIGHTING: bool = _bool("ENABLE_ADAPTIVE_ENGINE_WEIGHTING", False)
+
+# Equity curve protection: tighten grades on drawdown, relax on recovery
+ENABLE_EQUITY_PROTECTION: bool = _bool("ENABLE_EQUITY_PROTECTION", False)
+
+# Adaptive grades: tighten after losing streaks, relax after stable periods
+ENABLE_ADAPTIVE_GRADES: bool = _bool("ENABLE_ADAPTIVE_GRADES", False)
+
+# Auto-disable engines with strongly negative expectancy (re-enabled after cooldown)
+ENABLE_AUTO_DISABLE_ENGINES: bool = _bool("ENABLE_AUTO_DISABLE_ENGINES", False)
+
+# Correlation guard: prevent multiple highly correlated simultaneous positions
+ENABLE_CORRELATION_GUARD: bool = _bool("ENABLE_CORRELATION_GUARD", True)
+MAX_CORRELATED_POSITIONS: int = _int("MAX_CORRELATED_POSITIONS", 2)
+
 # ── Telegram command bot (operations console) ─────────────────────────────────
 # Set ENABLE_TELEGRAM_BOT=true in .env to activate the background polling daemon.
 ENABLE_TELEGRAM_BOT: bool = _bool("ENABLE_TELEGRAM_BOT", False)

@@ -47,6 +47,10 @@ from executor import ExecutionEngine
 from strategies.range_mr import get_signal_2h, resample_1h_to_2h
 import rejection_analytics
 import setup_engines
+import engine_ranker
+import market_state as mstate
+import equity_protection
+import correlation_guard
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
@@ -105,6 +109,7 @@ class ScanResult:
     consensus: object = None   # con.ConsensusResult | None
     rmr: object = None         # RangeMRSignal | None
     engine_signal: object = None  # EngineSignal | None
+    market_state: object = None   # market_state.MarketState | None
     decision: str = "NO_DATA"  # BUY | RMR_LONG | ENGINE_LONG | HOLD | SKIP | NO_DATA
     rank_score: float = 0.0
     rank_reason: str = ""
@@ -150,9 +155,17 @@ def scan_symbol(
     atr_pct = (atr_val / float(df["close"].iloc[-1])) * 100.0
 
     consensus = con.compute(df, trend, vol)
+
+    # Classify market state (non-raising — returns UNKNOWN on error)
+    try:
+        ms = mstate.classify(df, adx_val, atr_pct, trend, vol)
+    except Exception:
+        ms = None
+
     result = ScanResult(
         symbol=symbol, df=df, trend=trend, vol=vol,
         adx=adx_val, atr_pct=atr_pct, consensus=consensus,
+        market_state=ms,
     )
 
     if not reg.regime_allows_trade(trend, vol):
@@ -323,6 +336,7 @@ def live(client: Client, data_client: Client | None = None) -> None:
     _last_summary_hour: int = -1          # Telegram hourly summary
     _last_pinned_update: float = 0.0      # Telegram pinned dashboard (monotonic)
     _last_rejection_summary_ts: float = 0.0  # 12h rejection analytics Telegram summary
+    _last_learning_summary_ts: float = 0.0   # 24h engine learning summary
 
     def _cycle_timeout(_signum, _frame):
         raise TimeoutError("Candle cycle timed out (network stall)")
@@ -410,15 +424,48 @@ def live(client: Client, data_client: Client | None = None) -> None:
                         f"({r.consensus.ratio * 100:.1f}%)"
                         if r.consensus else "N/A"
                     )
+                    _ms_str = mstate.describe(r.market_state) if r.market_state else "market_state=N/A"
                     logger.log_info(
                         f"SCAN | {sym} | regime={r.trend}+{r.vol} | ADX={r.adx:.1f} | "
                         f"score={score_str} | decision={r.decision} | "
-                        f"{r.rank_reason or r.reject_reason}"
+                        f"{r.rank_reason or r.reject_reason} | {_ms_str}"
                     )
 
+                # ── Engine ranker: auto-disable check (once per cycle) ───────
+                try:
+                    engine_ranker.check_auto_disable()
+                except Exception:
+                    pass
+
                 # ── Rank candidates ───────────────────────────────────────────
+                # Apply market-state affinity and engine ranker multiplier
+                # to rank_score before sorting (non-raising).
+                _raw_candidates = [
+                    r for r in results.values()
+                    if r.decision in ("BUY", "RMR_LONG", "ENGINE_LONG")
+                ]
+                for _rc in _raw_candidates:
+                    try:
+                        _eng_name = (
+                            _rc.engine_signal.engine if _rc.engine_signal else
+                            "RMR" if _rc.decision == "RMR_LONG" else "CONSENSUS"
+                        )
+                        # Market-state affinity boost
+                        if _rc.market_state is not None:
+                            _rc.rank_score += mstate.affinity_rank_boost(
+                                _rc.market_state, _eng_name
+                            )
+                        # Adaptive engine weighting multiplier
+                        _rc.rank_score *= engine_ranker.rank_score_multiplier(_eng_name)
+                        # Block auto-disabled engines
+                        if not engine_ranker.is_engine_allowed(_eng_name):
+                            _rc.decision = "HOLD"
+                            _rc.reject_reason = f"{_eng_name} auto-disabled (negative expectancy)"
+                    except Exception:
+                        pass
+
                 candidates = sorted(
-                    [r for r in results.values() if r.decision in ("BUY", "RMR_LONG", "ENGINE_LONG")],
+                    [r for r in _raw_candidates if r.decision in ("BUY", "RMR_LONG", "ENGINE_LONG")],
                     key=lambda r: r.rank_score,
                     reverse=True,
                 )
@@ -500,6 +547,58 @@ def live(client: Client, data_client: Client | None = None) -> None:
                     _ra_grade = _grade
                     _ra_skip = _skip_trade
                     _ra_filter_hits = [f.name for f in _filter_results if not f.passed]
+
+                    # ── Equity protection grade override ──────────────────────
+                    try:
+                        _ep_grade = equity_protection.effective_min_grade(
+                            getattr(config, "MIN_TRADE_GRADE", "B"), balance
+                        )
+                        _ep_state = equity_protection.get_state(balance)
+                        if _ep_state != "normal":
+                            _ep_rank = {"A+": 0, "A": 1, "B": 2, "C": 3}
+                            _grade_current_rank = _ep_rank.get(_grade, 4)
+                            _ep_required_rank   = _ep_rank.get(_ep_grade, 0)
+                            if _grade_current_rank > _ep_required_rank:
+                                _skip_trade = True
+                                logger.log_info(
+                                    f"EQUITY_PROTECT | {best.symbol} | "
+                                    f"state={_ep_state} requires grade≥{_ep_grade} "
+                                    f"but got {_grade} — skipping"
+                                )
+                    except Exception as _ep_exc:
+                        logger.log_warning(f"equity_protection check error (non-critical): {_ep_exc}")
+
+                    # ── Adaptive engine grade override ────────────────────────
+                    try:
+                        _ae_eng = (
+                            best.engine_signal.engine if best.engine_signal else
+                            "RMR" if best.decision == "RMR_LONG" else "CONSENSUS"
+                        )
+                        _ae_min = engine_ranker.effective_min_grade_for_engine(_ae_eng)
+                        _ep_rank = {"A+": 0, "A": 1, "B": 2, "C": 3}
+                        if _ep_rank.get(_grade, 4) > _ep_rank.get(_ae_min, 2):
+                            _skip_trade = True
+                            logger.log_info(
+                                f"ADAPTIVE_WEIGHT | {best.symbol} | "
+                                f"engine {_ae_eng} requires grade≥{_ae_min} "
+                                f"but got {_grade} — skipping"
+                            )
+                    except Exception as _ae_exc:
+                        logger.log_warning(f"adaptive engine grade check error (non-critical): {_ae_exc}")
+
+                    # ── Correlation guard ─────────────────────────────────────
+                    try:
+                        _open_syms = [s for s, e in engines.items() if e.has_open_position()]
+                        _corr_ok, _corr_reason = correlation_guard.check_new_position(
+                            best.symbol, _open_syms
+                        )
+                        if not _corr_ok:
+                            _skip_trade = True
+                            logger.log_info(
+                                f"CORR_GUARD | {best.symbol} | blocked: {_corr_reason}"
+                            )
+                    except Exception as _cg_exc:
+                        logger.log_warning(f"correlation_guard check error (non-critical): {_cg_exc}")
 
                     if best.decision == "RMR_LONG":
                         rmr = best.rmr
@@ -867,6 +966,18 @@ def live(client: Client, data_client: Client | None = None) -> None:
                         except Exception as _pin_exc:
                             logger.log_warning(f"TG pinned update failed: {_pin_exc}")
                         _last_pinned_update = _now_mono
+
+                    # 24h engine learning summary
+                    _LEARN_INTERVAL = 24 * 3600
+                    if time.monotonic() - _last_learning_summary_ts >= _LEARN_INTERVAL:
+                        try:
+                            import telegram_commands as _tc_ls
+                            telegram_bot.send_rejection_summary(_tc_ls.cmd_leaderboard())
+                            _last_learning_summary_ts = time.monotonic()
+                        except Exception as _ls_exc:
+                            logger.log_warning(
+                                f"24h learning summary failed (non-critical): {_ls_exc}"
+                            )
 
                     # 12h rejection analytics summary
                     _RA_INTERVAL = 12 * 3600
