@@ -821,12 +821,30 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                 _ep_rank = {"A+": 0, "A": 1, "B": 2, "C": 3}
                                 if _ep_rank.get(_grade, 4) > _ep_rank.get(_av_grade_floor, 0):
                                     _skip_trade = True
-                                    logger.log_info(
+                                    _av_log = (
                                         f"AVOIDANCE | {best.symbol} | "
                                         f"{_av_result.severity} — grade={_grade} below "
                                         f"floor={_av_grade_floor}: "
                                         + "; ".join(_av_result.reasons)
                                     )
+                                    logger.log_info(_av_log)
+                                    if getattr(config, "ENABLE_TELEGRAM_BOT", False):
+                                        try:
+                                            _sev_icon = {
+                                                market_avoidance.SEVERITY_WARNING:  "⚠",
+                                                market_avoidance.SEVERITY_CRITICAL: "🔴",
+                                                market_avoidance.SEVERITY_CAUTION:  "💛",
+                                            }
+                                            _av_msg = (
+                                                f"*Market Avoidance* "
+                                                f"{_sev_icon.get(_av_result.severity, '⚠')}\n"
+                                                f"`{best.symbol}` blocked — "
+                                                f"grade `{_grade}` below floor `{_av_grade_floor}`\n"
+                                                f"_{'; '.join(_av_result.reasons)}_"
+                                            )
+                                            telegram_bot.send_rejection_summary(_av_msg)
+                                        except Exception:
+                                            pass
                         except Exception as _av_exc:
                             logger.log_warning(f"market_avoidance check error (non-critical): {_av_exc}")
 
