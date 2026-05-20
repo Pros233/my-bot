@@ -45,6 +45,7 @@ import trade_filters
 import trade_grader
 from executor import ExecutionEngine
 from strategies.range_mr import get_signal_2h, resample_1h_to_2h
+import rejection_analytics
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
@@ -276,6 +277,7 @@ def live(client: Client, data_client: Client | None = None) -> None:
     _last_weekly_report: str = ""
     _last_summary_hour: int = -1          # Telegram hourly summary
     _last_pinned_update: float = 0.0      # Telegram pinned dashboard (monotonic)
+    _last_rejection_summary_ts: float = 0.0  # 12h rejection analytics Telegram summary
 
     def _cycle_timeout(_signum, _frame):
         raise TimeoutError("Candle cycle timed out (network stall)")
@@ -371,6 +373,12 @@ def live(client: Client, data_client: Client | None = None) -> None:
                     reverse=True,
                 )
 
+                # Rejection analytics tracking — reset each cycle
+                _ra_grade: str = ""
+                _ra_skip: bool = False
+                _ra_filter_hits: list = []
+                _ra_executed_sym: str = ""
+
                 if open_count >= config.MAX_OPEN_TRADES:
                     for r in candidates:
                         logger.log_info(
@@ -438,6 +446,11 @@ def live(client: Client, data_client: Client | None = None) -> None:
                         _skip_trade = False
                         _filter_results = []
 
+                    # Capture for rejection analytics (after try/except so always set)
+                    _ra_grade = _grade
+                    _ra_skip = _skip_trade
+                    _ra_filter_hits = [f.name for f in _filter_results if not f.passed]
+
                     if best.decision == "RMR_LONG":
                         rmr = best.rmr
                         rmr_params = risk.TradeParams(
@@ -495,6 +508,8 @@ def live(client: Client, data_client: Client | None = None) -> None:
                             if success and engine.position:
                                 engine.position.session     = _session_str
                                 engine.position.trade_grade = _grade
+                            if success:
+                                _ra_executed_sym = best.symbol
                             if success and getattr(config, "ENABLE_TELEGRAM_BOT", False):
                                 try:
                                     _pos = engine.position
@@ -556,6 +571,8 @@ def live(client: Client, data_client: Client | None = None) -> None:
                             if success and engine.position:
                                 engine.position.session     = _session_str
                                 engine.position.trade_grade = _grade
+                            if success:
+                                _ra_executed_sym = best.symbol
                             if success and getattr(config, "ENABLE_TELEGRAM_BOT", False):
                                 try:
                                     _pos = engine.position
@@ -599,6 +616,63 @@ def live(client: Client, data_client: Client | None = None) -> None:
                         position_size=pos.size if pos else None,
                         stop_price=pos.stop_price if pos else None,
                         tp_price=pos.tp_price if pos else None,
+                    )
+
+                # ── Rejection analytics recording ─────────────────────────────
+                try:
+                    _ra_session_now = trade_filters.hour_to_session(now_utc.hour)
+                    for _ra_sym, _ra_r in results.items():
+                        _ra_is_candidate = _ra_r.decision in ("BUY", "RMR_LONG")
+                        _ra_is_best = bool(candidates) and candidates[0].symbol == _ra_sym
+
+                        if not _ra_is_candidate:
+                            # Rejected before reaching the candidate stage
+                            rejection_analytics.record_scan(
+                                symbol=_ra_sym,
+                                session=_ra_session_now,
+                                rejected=True,
+                                reject_reason=_ra_r.reject_reason or _ra_r.decision,
+                            )
+                        elif _ra_is_best and not pause_manager.is_paused() and open_count < config.MAX_OPEN_TRADES:
+                            # Best candidate — went through filter/grade pipeline
+                            _ra_did_exec = _ra_executed_sym == _ra_sym
+                            rejection_analytics.record_scan(
+                                symbol=_ra_sym,
+                                session=_ra_session_now,
+                                rejected=_ra_skip or not _ra_did_exec,
+                                reject_reason=(f"grade={_ra_grade}" if _ra_skip else ""),
+                                grade=_ra_grade,
+                                filter_hits=_ra_filter_hits,
+                                executed=_ra_did_exec,
+                            )
+                        else:
+                            # Candidate but blocked: paused, position full, or lower rank
+                            _ra_reason = (
+                                "paused" if pause_manager.is_paused()
+                                else "position_full" if open_count >= config.MAX_OPEN_TRADES
+                                else "lower_rank"
+                            )
+                            rejection_analytics.record_scan(
+                                symbol=_ra_sym,
+                                session=_ra_session_now,
+                                rejected=True,
+                                reject_reason=_ra_reason,
+                            )
+
+                    # Funnel log line (cumulative totals)
+                    _funnel = rejection_analytics.get_funnel()
+                    logger.log_info(
+                        f"FUNNEL | scanned={_funnel['scanned']} "
+                        f"rejected={_funnel['rejected']} "
+                        f"executed={_funnel['executed']} | "
+                        f"A+={_funnel['grade_Aplus']} "
+                        f"A={_funnel['grade_A']} "
+                        f"B={_funnel['grade_B']} "
+                        f"C={_funnel['grade_C']}"
+                    )
+                except Exception as _ra_exc:
+                    logger.log_warning(
+                        f"rejection_analytics record failed (non-critical): {_ra_exc}"
                     )
 
                 # ── Daily / weekly performance reports ───────────────────────
@@ -650,6 +724,18 @@ def live(client: Client, data_client: Client | None = None) -> None:
                         except Exception as _pin_exc:
                             logger.log_warning(f"TG pinned update failed: {_pin_exc}")
                         _last_pinned_update = _now_mono
+
+                    # 12h rejection analytics summary
+                    _RA_INTERVAL = 12 * 3600
+                    if time.monotonic() - _last_rejection_summary_ts >= _RA_INTERVAL:
+                        try:
+                            import telegram_commands as _tc_ra
+                            telegram_bot.send_rejection_summary(_tc_ra.cmd_rejections())
+                            _last_rejection_summary_ts = time.monotonic()
+                        except Exception as _rej_exc:
+                            logger.log_warning(
+                                f"12h rejection summary failed (non-critical): {_rej_exc}"
+                            )
 
                     # Daily PDF report
                     if (getattr(config, "ENABLE_TELEGRAM_PDF_REPORT", False)

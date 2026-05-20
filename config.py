@@ -283,10 +283,10 @@ SYMBOL_COOLDOWN_CANDLES: int = _int("SYMBOL_COOLDOWN_CANDLES", 3)
 
 # ── Trade grading ─────────────────────────────────────────────────────────────
 # Minimum grade to execute a trade. Options: A+ A B C
-# Default: A → only A+ and A grades execute.
-MIN_TRADE_GRADE: str = os.getenv("MIN_TRADE_GRADE", "A").strip()
+# Default: B → A+, A, and B grades execute (relaxed from A to increase frequency).
+MIN_TRADE_GRADE: str = os.getenv("MIN_TRADE_GRADE", "B").strip()
 if MIN_TRADE_GRADE not in ("A+", "A", "B", "C"):
-    MIN_TRADE_GRADE = "A"
+    MIN_TRADE_GRADE = "B"
 
 # Adaptive filters: tighten grade after drawdowns, relax after stable performance
 ENABLE_ADAPTIVE_FILTERS: bool = _bool("ENABLE_ADAPTIVE_FILTERS", False)

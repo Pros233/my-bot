@@ -13,7 +13,7 @@ Grades:
   REJECT — hard failure: news window, BTC bearish, extreme candle, etc.
 
 Config:
-  MIN_TRADE_GRADE = A   → only A+ and A execute (default)
+  MIN_TRADE_GRADE = B   → A+, A, and B grades execute (default)
 
 Grade is logged with full reasoning for every candidate, whether executed or not.
 Never raises — returns ("REJECT", [...]) on any internal error.
@@ -87,7 +87,8 @@ def _score_adx(adx: float) -> tuple[int, str]:
         return 1, f"ADX={adx:.1f} (very strong, risk of reversal)"
     if adx >= 55:
         return -1, f"ADX={adx:.1f} (extreme — reversal risk)"
-    return -1, f"ADX={adx:.1f} (weak trend)"
+    # ADX < 20 → pure ranging market, ideal for RMR setups (neutral, not a penalty)
+    return 0, f"ADX={adx:.1f} (ranging — RMR ideal)"
 
 
 def _score_signal(score_pct: float) -> tuple[int, str]:
@@ -110,7 +111,7 @@ def _score_session(now_utc: datetime) -> tuple[int, str]:
         "NY/London": 3,
         "London":    2,
         "New York":  2,
-        "Asia":      0,
+        "Asia":      1,    # softened: was 0 — Asia can produce valid RMR setups
         "Off-hours": -1,
     }
     pts = weights.get(session, 0)

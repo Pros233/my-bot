@@ -391,6 +391,23 @@ def send_market_summary(results: dict) -> None:
         logger.log_warning(f"TG market summary failed (non-critical): {exc}")
 
 
+# ── Rejection analytics summary ──────────────────────────────────────────────
+
+def send_rejection_summary(text: str) -> None:
+    """
+    Send a rejection analytics summary message via the command bot.
+    Requires ENABLE_TELEGRAM_BOT=true and valid TOKEN/CHAT_ID. Never raises.
+    """
+    if not getattr(config, "ENABLE_TELEGRAM_BOT", False):
+        return
+    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
+        return
+    try:
+        _send_text(text)
+    except Exception as exc:
+        logger.log_warning(f"TG rejection summary failed (non-critical): {exc}")
+
+
 # ── Whale alerts ──────────────────────────────────────────────────────────────
 
 def check_whale_alerts(scan_results: dict) -> None:
@@ -559,6 +576,9 @@ def _handle_command(cmd: str, args: list) -> None:
 
     elif cmd == "grades":
         _send_text(tc.cmd_grades())
+
+    elif cmd == "rejections":
+        _send_text(tc.cmd_rejections())
 
     elif cmd == "help":
         _send_text(tc.cmd_help())

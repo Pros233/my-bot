@@ -146,7 +146,7 @@ def filter_volume_quality(df) -> FilterResult:
                 name, False,
                 f"low volume: {ratio:.2f}x median (min={min_ratio:.2f}x)",
                 hard_fail=False,
-                grade_penalty=3,
+                grade_penalty=2,   # softened from 3 — low volume is a warning, not a block
             )
 
         # Fake spike: volume spike but price barely moved
@@ -206,7 +206,7 @@ def filter_candle_extension(df) -> FilterResult:
                 name, False,
                 f"extended candle: {body:.2f} = {body/atr:.1f}x ATR (limit={mult:.1f}x)",
                 hard_fail=False,
-                grade_penalty=3,
+                grade_penalty=2,   # softened from 3 — moderate extension, not catastrophic
             )
 
         return FilterResult(name, True, f"candle body OK: {body/atr:.2f}x ATR")
@@ -332,11 +332,12 @@ def filter_session(now_utc: datetime) -> FilterResult:
         weight = weights.get(session, 0)
 
         if weight < 0:
+            # Off-hours: grader already applies -1 score penalty; no double-penalty here
             return FilterResult(
                 name, False,
                 f"session={session} (low quality)",
                 hard_fail=False,
-                grade_penalty=abs(weight),
+                grade_penalty=0,   # softened: grader score handles the penalty
             )
         return FilterResult(name, True, f"session={session}")
 

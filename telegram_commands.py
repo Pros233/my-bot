@@ -523,6 +523,78 @@ def cmd_grades() -> str:
         return f"⚠ /grades error: `{exc}`"
 
 
+# ── /rejections ───────────────────────────────────────────────────────────────
+
+def cmd_rejections() -> str:
+    """Return a formatted rejection analytics summary."""
+    try:
+        import rejection_analytics as ra
+
+        summary = ra.get_summary()
+        funnel  = ra.get_funnel()
+
+        total    = summary["total_scanned"]
+        rejected = summary["total_rejected"]
+        executed = summary["total_executed"]
+        rate_pct = summary["rejection_rate_pct"]
+
+        lines = [
+            f"*Why Trades Are Being Rejected* | {_mode()}",
+            "",
+            f"Setup funnel (all-time):",
+            f"  Scanned:  `{total}`",
+            f"  Rejected: `{rejected}`  ({rate_pct:.0f}%)",
+            f"  Executed: `{executed}`",
+            "",
+        ]
+
+        # Top rejection reasons
+        top_reasons = summary["top_reasons"]
+        if top_reasons:
+            total_rej = rejected or 1
+            lines.append("*Top Rejection Reasons*")
+            for reason, count in top_reasons[:5]:
+                pct = count / total_rej * 100
+                bar = "█" * int(pct / 5)
+                lines.append(f"  `{reason[:38]}`")
+                lines.append(f"    {bar} {pct:.0f}% ({count})")
+            lines.append("")
+
+        # Grade distribution
+        grade_dist = summary["grade_distribution"]
+        if grade_dist:
+            lines.append("*Grade Distribution*")
+            for g in ("A+", "A", "B", "C", "REJECT"):
+                n = grade_dist.get(g, 0)
+                if n:
+                    lines.append(f"  `{g}`: {n}")
+            lines.append("")
+
+        # Top filter hits
+        top_filters = summary["top_filters_hit"]
+        if top_filters:
+            lines.append("*Filter Hit Rates*")
+            for fname, count in top_filters[:4]:
+                lines.append(f"  `{fname}`: {count} hits")
+            lines.append("")
+
+        # Top sessions rejected
+        top_sess = summary["top_sessions_rejected"]
+        if top_sess:
+            lines.append("*Most Rejected Sessions*")
+            for sess, count in top_sess[:3]:
+                lines.append(f"  `{sess}`: {count}")
+
+        if total == 0:
+            return "*Rejection Analytics*: no data yet — bot needs to run at least one cycle."
+
+        return "\n".join(lines)
+
+    except Exception as exc:
+        logger.log_warning(f"cmd_rejections error: {exc}")
+        return f"⚠ /rejections error: `{exc}`"
+
+
 # ── /help ─────────────────────────────────────────────────────────────────────
 
 def cmd_help() -> str:
@@ -552,6 +624,7 @@ def cmd_help() -> str:
         "/sessions — PnL breakdown by session\n"
         "/regimes — PnL breakdown by regime\n"
         "/grades — Trade grade distribution\n"
+        "/rejections — Why trades are being rejected (filter/grade funnel)\n"
         "\n"
         "_All commands restricted to authorised chat ID only._"
     )

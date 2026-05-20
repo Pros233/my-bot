@@ -569,6 +569,19 @@ def _generate_summary() -> dict:
         return {"text": "Summary unavailable.", "generated_at": "—"}
 
 
+# ── Rejection analytics ───────────────────────────────────────────────────────
+
+def _fetch_rejection_analytics() -> dict:
+    try:
+        import rejection_analytics as ra
+        summary = ra.get_summary()
+        funnel  = ra.get_funnel()
+        series  = ra.get_daily_series(14)
+        return {"summary": summary, "funnel": funnel, "series": series}
+    except Exception:
+        return {}
+
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 def login_required(fn):
@@ -919,6 +932,36 @@ tr.clickable:hover td{background:#1c2128;cursor:pointer}
 <!-- G. Arbitrage Watch -->
 <div class="stitle">Arbitrage Watch <span class="badge bwatch">WATCH ONLY</span> <span class="stitle-ts" id="arb-ts"></span></div>
 <div class="card" id="arb-container"><div class="nodata cd">Loading arbitrage data&hellip;</div></div>
+
+<!-- H. Rejection Analytics -->
+<div class="stitle">Why Trades Are Being Rejected <span class="stitle-ts" id="rej-ts"></span></div>
+<div class="g4" id="rej-stats" style="margin-bottom:10px">
+  <div class="card"><div class="lbl">Setups Scanned</div><div class="val" id="rej-scanned">—</div></div>
+  <div class="card"><div class="lbl">Rejected</div><div class="val cr" id="rej-rejected">—</div><div class="sub" id="rej-rate">—</div></div>
+  <div class="card"><div class="lbl">Executed</div><div class="val cg" id="rej-executed">—</div></div>
+  <div class="card"><div class="lbl">Min Grade</div><div class="val cy" id="rej-min-grade">—</div></div>
+</div>
+<div class="g2" style="margin-bottom:10px">
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Top Rejection Reasons</div>
+    <div id="rej-reasons-list"><div class="nodata cd">No data yet</div></div>
+  </div>
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Grade Distribution</div>
+    <canvas id="rej-grade-chart" style="max-height:140px"></canvas>
+    <div id="rej-grade-fallback" class="nodata cd" style="display:none">No grade data yet</div>
+  </div>
+</div>
+<div class="g2" style="margin-bottom:10px">
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Setups Per Day (14d)</div>
+    <canvas id="rej-daily-chart" style="max-height:120px"></canvas>
+  </div>
+  <div class="card">
+    <div class="lbl" style="margin-bottom:8px">Executed vs Rejected (14d)</div>
+    <canvas id="rej-execrej-chart" style="max-height:120px"></canvas>
+  </div>
+</div>
 
 <!-- Bot Log -->
 <div class="stitle">Bot Log <span class="stitle-ts" id="log-ts"></span></div>
@@ -1381,6 +1424,111 @@ async function reloadSummary() {
   } catch(e) {}
 }
 
+/* ── H. Rejection Analytics: loadRejections ── */
+let _rejGradeChart = null, _rejDailyChart = null, _rejExecRejChart = null;
+
+async function loadRejections() {
+  try {
+    const d = await fetch('/api/rejections').then(r => r.json());
+    if (!d || !d.summary) return;
+
+    const s = d.summary, f = d.funnel, ser = d.series || {};
+    const ts = new Date().toLocaleTimeString();
+    const el = document.getElementById('rej-ts');
+    if (el) el.textContent = ts;
+
+    // Stat cards
+    _txt('rej-scanned',  f.scanned  || 0);
+    _txt('rej-rejected', f.rejected || 0);
+    const ratePct = s.rejection_rate_pct || 0;
+    const rateEl = document.getElementById('rej-rate');
+    if (rateEl) rateEl.textContent = ratePct.toFixed(0) + '% rejection rate';
+    _txt('rej-executed', f.executed || 0);
+
+    // Min grade from config (shown static from summary placeholder)
+    const mgEl = document.getElementById('rej-min-grade');
+    if (mgEl) mgEl.textContent = 'B (default)';
+
+    // Top rejection reasons bar list
+    const reasonsEl = document.getElementById('rej-reasons-list');
+    if (reasonsEl) {
+      const reasons = s.top_reasons || [];
+      if (reasons.length === 0) {
+        reasonsEl.innerHTML = '<div class="nodata cd">No rejection data yet</div>';
+      } else {
+        const totalRej = f.rejected || 1;
+        reasonsEl.innerHTML = reasons.slice(0, 6).map(([reason, count]) => {
+          const pct = Math.round(count / totalRej * 100);
+          const color = pct > 40 ? 'var(--r)' : pct > 20 ? 'var(--y)' : 'var(--b)';
+          return `<div style="margin-bottom:6px">
+            <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px">
+              <span style="color:var(--text);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:75%">${reason}</span>
+              <span style="color:var(--dim)">${pct}% (${count})</span>
+            </div>
+            <div style="background:var(--border);border-radius:3px;height:4px">
+              <div style="width:${Math.min(pct,100)}%;background:${color};height:4px;border-radius:3px"></div>
+            </div>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    // Grade distribution doughnut
+    const gradeData = s.grade_distribution || {};
+    const gradeLabels = ['A+', 'A', 'B', 'C', 'REJECT'];
+    const gradeValues = gradeLabels.map(g => gradeData[g] || 0);
+    const gradeColors = ['#3fb950','#58a6ff','#d29922','#f0883e','#f85149'];
+    const gradeCanvas = document.getElementById('rej-grade-chart');
+    const gradeFallback = document.getElementById('rej-grade-fallback');
+    if (gradeValues.some(v => v > 0)) {
+      if (gradeFallback) gradeFallback.style.display = 'none';
+      if (_rejGradeChart) _rejGradeChart.destroy();
+      _rejGradeChart = new Chart(gradeCanvas, {
+        type: 'doughnut',
+        data: { labels: gradeLabels, datasets: [{ data: gradeValues, backgroundColor: gradeColors, borderWidth: 1, borderColor: '#21262d' }] },
+        options: { plugins: { legend: { position: 'right', labels: { font: { size: 11 }, color: '#8b949e', boxWidth: 12, padding: 8 } } }, cutout: '60%' }
+      });
+    } else if (gradeFallback) {
+      gradeFallback.style.display = '';
+    }
+
+    // Daily setups line chart
+    const dates   = ser.dates   || [];
+    const scanned = ser.scanned || [];
+    const rejected = ser.rejected || [];
+    const executed = ser.executed || [];
+    const shortDates = dates.map(d => d.slice(5));  // MM-DD
+
+    if (dates.length > 0) {
+      if (_rejDailyChart) _rejDailyChart.destroy();
+      _rejDailyChart = new Chart(document.getElementById('rej-daily-chart'), {
+        type: 'bar',
+        data: {
+          labels: shortDates,
+          datasets: [
+            { label: 'Scanned',  data: scanned,  backgroundColor: '#58a6ff55', borderColor: '#58a6ff', borderWidth: 1 },
+            { label: 'Rejected', data: rejected, backgroundColor: '#f8514955', borderColor: '#f85149', borderWidth: 1 },
+          ]
+        },
+        options: { plugins: { legend: { labels: { font: { size: 10 }, color: '#8b949e', boxWidth: 10 } } }, scales: { x: { ticks: { color: '#8b949e', font: { size: 9 } }, grid: { color: '#21262d' } }, y: { ticks: { color: '#8b949e', font: { size: 9 } }, grid: { color: '#21262d' } } } }
+      });
+
+      if (_rejExecRejChart) _rejExecRejChart.destroy();
+      _rejExecRejChart = new Chart(document.getElementById('rej-execrej-chart'), {
+        type: 'bar',
+        data: {
+          labels: shortDates,
+          datasets: [
+            { label: 'Executed', data: executed, backgroundColor: '#3fb95055', borderColor: '#3fb950', borderWidth: 1 },
+            { label: 'Rejected', data: rejected, backgroundColor: '#f8514955', borderColor: '#f85149', borderWidth: 1 },
+          ]
+        },
+        options: { plugins: { legend: { labels: { font: { size: 10 }, color: '#8b949e', boxWidth: 10 } } }, scales: { x: { ticks: { color: '#8b949e', font: { size: 9 } }, grid: { color: '#21262d' } }, y: { ticks: { color: '#8b949e', font: { size: 9 } }, grid: { color: '#21262d' } } } }
+      });
+    }
+  } catch(e) {}
+}
+
 /* ── Footer timestamp ── */
 function updateFooter() {
   const el = document.getElementById('footer-ts');
@@ -1398,21 +1546,23 @@ document.addEventListener('DOMContentLoaded', () => {
   loadTrades();
   loadArb();
   loadTrends();
+  loadRejections();
   loadLogs();
   connectSSE();
   updateFooter();
 
   // Polling intervals (no full-page reload — zero flicker)
-  setInterval(loadStatus,  15_000);   // status, perf, balances, orders
-  setInterval(loadLogs,    10_000);   // bot log
-  setInterval(loadRisk,    20_000);   // risk exposure
-  setInterval(loadTrades,  60_000);   // trade list
-  setInterval(loadArb,     60_000);   // arb watch
-  setInterval(loadTrends,  60_000);   // trending coins
-  setInterval(loadCharts,  60_000);   // price charts
-  setInterval(loadEquity, 120_000);   // equity curve
-  setInterval(loadHeatmap,300_000);   // signal heatmap
-  setInterval(updateFooter, 60_000);  // footer clock
+  setInterval(loadStatus,      15_000);   // status, perf, balances, orders
+  setInterval(loadLogs,        10_000);   // bot log
+  setInterval(loadRisk,        20_000);   // risk exposure
+  setInterval(loadTrades,      60_000);   // trade list
+  setInterval(loadArb,         60_000);   // arb watch
+  setInterval(loadTrends,      60_000);   // trending coins
+  setInterval(loadCharts,      60_000);   // price charts
+  setInterval(loadRejections, 120_000);   // rejection analytics
+  setInterval(loadEquity,     120_000);   // equity curve
+  setInterval(loadHeatmap,    300_000);   // signal heatmap
+  setInterval(updateFooter,    60_000);   // footer clock
 });
 </script>
 
@@ -1573,6 +1723,12 @@ def api_summary():
         with _cache_lock:
             _cache.pop("summary", None)
     return jsonify(_cached("summary", _generate_summary, 3600.0) or {})
+
+
+@app.route("/api/rejections")
+@login_required
+def api_rejections():
+    return jsonify(_cached("rejections", _fetch_rejection_analytics, 30.0) or {})
 
 
 @app.route("/api/analytics")
