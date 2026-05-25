@@ -43,7 +43,7 @@ def _bool(key: str, default: bool) -> bool:
 # ── Binance credentials (optional at import time; validated in main.py) ───────
 BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET_KEY: str = os.getenv("BINANCE_SECRET_KEY", "")
-TESTNET: bool = _bool("TESTNET", True)
+TESTNET: bool = _bool("TESTNET", False)
 
 # ── Trading ───────────────────────────────────────────────────────────────────
 SYMBOL: str = os.getenv("SYMBOL", "BTCUSDT")
@@ -375,6 +375,7 @@ MANUAL_APPROVAL_TIMEOUT: int = _int("MANUAL_APPROVAL_TIMEOUT", 300)
 
 # /panic command: if true, also writes TESTNET=true to .env (requires bot restart)
 PANIC_SWITCH_ENABLE_TESTNET: bool = _bool("PANIC_SWITCH_ENABLE_TESTNET", False)
+LIVE_MODE_LOCK: bool = _bool("LIVE_MODE_LOCK", False)  # if True, refuse to start when TESTNET=true
 
 # Voice alerts via gTTS (requires: pip install gtts)
 ENABLE_TELEGRAM_VOICE_ALERTS: bool = _bool("ENABLE_TELEGRAM_VOICE_ALERTS", False)

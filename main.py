@@ -1609,6 +1609,23 @@ def main() -> None:
 
     else:
         # No mode flag → live trading
+        # -- LIVE_MODE_LOCK safety guard ---------------------------------------
+        if config.LIVE_MODE_LOCK and config.TESTNET:
+            _guard_msg = (
+                "⛔ STARTUP ABORTED - LIVE_MODE_LOCK violated\n"
+                "LIVE_MODE_LOCK=true but TESTNET=true detected.\n"
+                "Fix .env: set TESTNET=false then restart the bot."
+            )
+            import requests as _req
+            try:
+                _req.post(
+                    "https://api.telegram.org/bot" + config.TELEGRAM_BOT_TOKEN + "/sendMessage",
+                    json={"chat_id": config.TELEGRAM_CHAT_ID, "text": _guard_msg, "parse_mode": "Markdown"},
+                    timeout=10,
+                )
+            except Exception:
+                pass
+            sys.exit("[FATAL] LIVE_MODE_LOCK=true but TESTNET=true - refusing to start.")
         config.validate_live_credentials()
         client = _make_client(testnet=config.TESTNET)
         # Fetch candles from mainnet — testnet has severely limited history (~80 bars)

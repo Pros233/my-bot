@@ -7,7 +7,7 @@
 
 # CONFIG: adjust if needed
 BOT_CMD=".venv/bin/python main.py"
-ENV_VARS="ENABLE_RANGE_MR=true ENABLE_PARTIAL_TP=true RMR_TREND_ENTRY=true ENABLE_MOMENTUM_EXIT=true TESTNET=true"
+ENV_VARS="ENABLE_RANGE_MR=true ENABLE_PARTIAL_TP=true RMR_TREND_ENTRY=true ENABLE_MOMENTUM_EXIT=true"
 PID_FILE="./bot.pid"
 LOG_FILE="./bot.log"
 CHECK_INTERVAL=60          # seconds between process checks
