@@ -7,6 +7,9 @@
 #     --exclude='trades.db' \
 #     --exclude='PAUSED' \
 #     --exclude='PAUSE_STATE.json' \
+#     --exclude='engine_governor.json' \
+#     --exclude='anomaly_detector.json' \
+#     --exclude='rejection_analytics.json' \
 #     --exclude='trend_watchlist.db' \
 #     --exclude='*.db' \
 #     --exclude='*.csv' \
