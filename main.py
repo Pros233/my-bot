@@ -708,6 +708,7 @@ def live(client: Client, data_client: Client | None = None) -> None:
                     )
 
                     engine = engines[best.symbol]
+                    _boost_override = False  # set True if frequency boost allows a grade-skip
 
                     # ── Trade quality filters + grader ────────────────────────
                     try:
@@ -750,6 +751,43 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                 f"base_floor={_base_grade} effective_floor={_eff_min_grade} | "
                                 + " | ".join(_grade_reasons[:3])
                             )
+
+                        # ── Frequency boost override (grade floor only) ────────
+                        if (
+                            _skip_trade
+                            and _grade != "REJECT"
+                            and getattr(config, "ENABLE_FREQUENCY_BOOST", False)
+                        ):
+                            try:
+                                import frequency_boost as _fb
+                                _br = _fb.check_boost(
+                                    grade=_grade,
+                                    symbol=best.symbol,
+                                    df=best.df,
+                                    confidence=_cycle_confidence,
+                                    filter_results=_filter_results,
+                                    now_utc=now_utc,
+                                )
+                                if _br.allowed:
+                                    _skip_trade = False
+                                    _boost_override = True
+                                    logger.log_info(
+                                        f"BOOST_OVERRIDE | {best.symbol} | grade={_grade} "
+                                        f"allowed under frequency boost | "
+                                        f"trades_used={_br.boost_trades_used} "
+                                        f"remaining={_br.boost_trades_remaining} "
+                                        f"hours_left={_br.boost_remaining_hours:.1f}h"
+                                    )
+                                else:
+                                    logger.log_info(
+                                        f"BOOST_DENIED | {best.symbol} | grade={_grade} | "
+                                        f"reason={_br.reason}"
+                                    )
+                            except Exception as _fb_exc:
+                                logger.log_warning(
+                                    f"frequency_boost check error (non-critical): {_fb_exc}"
+                                )
+
                     except Exception as _flt_exc:
                         # Fail-safe: filter/grade crash must never block trading
                         logger.log_warning(f"filter/grade pipeline error (non-critical): {_flt_exc}")
@@ -1159,6 +1197,18 @@ def live(client: Client, data_client: Client | None = None) -> None:
                             logger.log_warning(
                                 f"ENGINE_LONG order failed for {best.symbol} — staying flat."
                             )
+
+                # ── Frequency boost trade accounting ──────────────────────────
+                if _boost_override and _ra_executed_sym and getattr(config, "ENABLE_FREQUENCY_BOOST", False):
+                    try:
+                        import frequency_boost as _fb_rec
+                        _fb_rec.record_trade(_ra_executed_sym)
+                        logger.log_info(
+                            f"BOOST_TRADE_RECORDED | {_ra_executed_sym} | "
+                            f"trade counted against boost quota"
+                        )
+                    except Exception as _fb_rec_exc:
+                        logger.log_warning(f"frequency_boost record error: {_fb_rec_exc}")
 
                 # ── Dashboard for each symbol ─────────────────────────────────
                 for sym, r in results.items():

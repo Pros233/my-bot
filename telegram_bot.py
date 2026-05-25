@@ -677,6 +677,15 @@ def _handle_command(cmd: str, args: list) -> None:
     elif cmd == "wsfeed":
         _send_text(tc.cmd_wsfeed())
 
+    elif cmd == "boost_status":
+        _send_text(tc.cmd_boost_status())
+
+    elif cmd == "boost_on":
+        _send_text(tc.cmd_boost_on())
+
+    elif cmd == "boost_off":
+        _send_text(tc.cmd_boost_off())
+
     elif cmd == "help":
         _send_text(tc.cmd_help())
 

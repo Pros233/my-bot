@@ -386,6 +386,26 @@ ENABLE_TELEGRAM_PDF_REPORT: bool = _bool("ENABLE_TELEGRAM_PDF_REPORT", False)
 # Hourly market summary interval (hours, 0 = disabled)
 TELEGRAM_SUMMARY_INTERVAL_HOURS: int = _int("TELEGRAM_SUMMARY_INTERVAL_HOURS", 1)
 
+# ── Frequency boost mode ─────────────────────────────────────────────────────
+# Temporarily allow B/C-grade trades under strict safety conditions.
+# All hard risk controls (REJECT, hard_fail, pause, DEFENSIVE, WARNING/CRITICAL
+# avoidance) remain enforced. Only the grade floor is relaxed.
+ENABLE_FREQUENCY_BOOST: bool = _bool("ENABLE_FREQUENCY_BOOST", False)
+# Comma-separated grades the boost may allow: e.g. "B,C" or just "B"
+FREQUENCY_BOOST_ALLOWED_GRADES: str = os.getenv("FREQUENCY_BOOST_ALLOWED_GRADES", "B,C")
+# How long a single boost session lasts (hours)
+FREQUENCY_BOOST_DURATION_HOURS: int = _int("FREQUENCY_BOOST_DURATION_HOURS", 72)
+# Max trades that can execute under boost before it auto-deactivates
+FREQUENCY_BOOST_MAX_TRADES: int = _int("FREQUENCY_BOOST_MAX_TRADES", 3)
+# Minimum confidence score to allow a boosted trade
+FREQUENCY_BOOST_REQUIRE_CONFIDENCE_ABOVE: float = _float("FREQUENCY_BOOST_REQUIRE_CONFIDENCE_ABOVE", 45.0)
+# Block boost when market avoidance is WARNING or CRITICAL
+FREQUENCY_BOOST_REQUIRE_MARKET_AVOIDANCE_CLEAR: bool = _bool("FREQUENCY_BOOST_REQUIRE_MARKET_AVOIDANCE_CLEAR", True)
+# Max allowed spread in basis points for boosted trades
+FREQUENCY_BOOST_MAX_SPREAD_BPS: float = _float("FREQUENCY_BOOST_MAX_SPREAD_BPS", 10.0)
+# Comma-separated symbol allowlist; empty string = all configured symbols
+FREQUENCY_BOOST_SYMBOLS: str = os.getenv("FREQUENCY_BOOST_SYMBOLS", "")
+
 # ── ML scoring ────────────────────────────────────────────────────────────────
 ENABLE_ML_SCORING: bool = _bool("ENABLE_ML_SCORING", False)
 

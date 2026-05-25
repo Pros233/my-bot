@@ -10,6 +10,7 @@
 #     --exclude='engine_governor.json' \
 #     --exclude='anomaly_detector.json' \
 #     --exclude='rejection_analytics.json' \
+#     --exclude='frequency_boost_state.json' \
 #     --exclude='trend_watchlist.db' \
 #     --exclude='*.db' \
 #     --exclude='*.csv' \

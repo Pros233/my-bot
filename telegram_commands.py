@@ -1534,6 +1534,11 @@ def cmd_help() -> str:
         "/mlscore — ML trade scoring model status and accuracy\n"
         "/wsfeed — WebSocket live feed status and live prices\n"
         "\n"
+        "*Frequency Boost*\n"
+        "/boost_status — Boost mode state (active, trades used, time left)\n"
+        "/boost_on — Activate frequency boost (allows B/C-grade trades safely)\n"
+        "/boost_off — Deactivate frequency boost immediately\n"
+        "\n"
         "_All commands restricted to authorised chat ID only._"
     )
 
@@ -1856,3 +1861,68 @@ def cmd_wsfeed() -> str:
         return "\n".join(lines)
     except Exception as exc:
         return f"*WSFeed*: error — `{exc}`"
+
+
+# ── /boost_status ─────────────────────────────────────────────────────────────
+
+def cmd_boost_status() -> str:
+    try:
+        import frequency_boost as _fb
+        enabled = getattr(config, "ENABLE_FREQUENCY_BOOST", False)
+        st = _fb.get_status()
+        active = st["active"]
+
+        lines = ["*Frequency Boost*"]
+        lines.append(f"Feature: `{'ENABLED' if enabled else 'DISABLED'}`")
+        lines.append(f"State:   `{'ACTIVE' if active else 'INACTIVE'}`")
+
+        if not enabled:
+            lines.append("\n_Set `ENABLE_FREQUENCY_BOOST=true` in .env to enable._")
+            return "\n".join(lines)
+
+        lines.append(f"Allowed grades:    `{st['allowed_grades']}`")
+        lines.append(f"Confidence min:    `{st['confidence_threshold']}`")
+        lines.append(f"Duration:          `{st['duration_hours']}h`")
+        lines.append(f"Max trades:        `{st['max_trades']}`")
+
+        if active:
+            lines.append(f"\nTrades used:      `{st['trades_used']}/{st['max_trades']}`")
+            lines.append(f"Trades remaining: `{st['trades_remaining']}`")
+            lines.append(f"Time remaining:   `{st['remaining_hours']:.1f}h`")
+        else:
+            lines.append(f"\nTrades used this session: `{st['trades_used']}`")
+            lines.append("\nUse /boost_on to activate.")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.log_warning(f"cmd_boost_status error: {exc}")
+        return f"*Boost*: error — `{exc}`"
+
+
+# ── /boost_on ─────────────────────────────────────────────────────────────────
+
+def cmd_boost_on() -> str:
+    try:
+        if not getattr(config, "ENABLE_FREQUENCY_BOOST", False):
+            return (
+                "*Boost*: `ENABLE_FREQUENCY_BOOST` is `false` in .env\n"
+                "_Add `ENABLE_FREQUENCY_BOOST=true` to .env and restart to use boost._"
+            )
+        import frequency_boost as _fb
+        msg = _fb.activate()
+        return f"*Frequency Boost* — {msg}"
+    except Exception as exc:
+        logger.log_warning(f"cmd_boost_on error: {exc}")
+        return f"*Boost ON*: error — `{exc}`"
+
+
+# ── /boost_off ────────────────────────────────────────────────────────────────
+
+def cmd_boost_off() -> str:
+    try:
+        import frequency_boost as _fb
+        msg = _fb.deactivate()
+        return f"*Frequency Boost* — {msg}"
+    except Exception as exc:
+        logger.log_warning(f"cmd_boost_off error: {exc}")
+        return f"*Boost OFF*: error — `{exc}`"
