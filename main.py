@@ -736,10 +736,18 @@ def live(client: Client, data_client: Client | None = None) -> None:
                             ),
                         )
                         _skip_trade = trade_grader.grade_rank(_grade) > trade_grader.grade_rank(_eff_min_grade)
+                        _base_grade = getattr(config, "MIN_TRADE_GRADE", "A")
+                        if _eff_min_grade != _base_grade:
+                            logger.log_info(
+                                f"ADAPTIVE_GRADE | {best.symbol} | "
+                                f"floor tightened: {_base_grade} -> {_eff_min_grade} "
+                                f"(adaptive active)"
+                            )
                         if _skip_trade:
                             logger.log_info(
                                 f"SKIP | {best.symbol} | grade={_grade} "
-                                f"(score={_grade_score}) below min={_eff_min_grade} | "
+                                f"(score={_grade_score}) | "
+                                f"base_floor={_base_grade} effective_floor={_eff_min_grade} | "
                                 + " | ".join(_grade_reasons[:3])
                             )
                     except Exception as _flt_exc:

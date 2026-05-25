@@ -511,7 +511,27 @@ def cmd_grades() -> str:
         import performance_advanced as pa
         rows = pa.pnl_by_grade()
         dist = pa.grade_distribution()
-        lines = [f"*Trade Grade Distribution* | {_mode()}"]
+        _min_g = getattr(config, "MIN_TRADE_GRADE", "A")
+        _eff_g = _min_g
+        if getattr(config, "ENABLE_ADAPTIVE_GRADES", False):
+            try:
+                import trade_grader, performance as _pf
+                from datetime import datetime, timezone as _tz
+                _d = datetime.now(_tz.utc).strftime("%Y-%m-%d")
+                _iso = datetime.now(_tz.utc).isocalendar()
+                _w = f"{_iso[0]}-W{_iso[1]:02d}"
+                _eff_g = trade_grader.adaptive_min_grade(
+                    consecutive_losses=_pf.consecutive_losses(),
+                    daily_loss_pct=0.0,
+                    consecutive_wins=_pf.consecutive_wins(),
+                    weekly_pnl=_pf.weekly_pnl(_w),
+                )
+            except Exception:
+                pass
+        _grade_note = f"base=`{_min_g}`"
+        if _eff_g != _min_g:
+            _grade_note += f" | adaptive_floor=`{_eff_g}` (tightened)"
+        lines = [f"*Trade Grade Distribution* | {_mode()} | {_grade_note}"]
         for grade in ("A+", "A", "B", "C", "ungraded"):
             count = dist.get(grade, 0)
             if count:
@@ -860,6 +880,28 @@ def cmd_health() -> str:
         # Min grade
         min_grade = getattr(config, "MIN_TRADE_GRADE", "A")
         lines.append(f"*Min grade*: `{min_grade}` | effective=`{ep_sum.get('effective_grade', min_grade)}`")
+
+        # Adaptive grade floor
+        if getattr(config, "ENABLE_ADAPTIVE_GRADES", False):
+            try:
+                import trade_grader, performance as _perf
+                from datetime import datetime, timezone as _tz
+                _today = datetime.now(_tz.utc).strftime("%Y-%m-%d")
+                _iso   = datetime.now(_tz.utc).isocalendar()
+                _week  = f"{_iso[0]}-W{_iso[1]:02d}"
+                _bal   = 1.0  # placeholder — just for sign
+                _dpnl  = _perf.daily_pnl(_today)
+                _dpct  = (_dpnl / _bal * 100) if _bal > 0 else 0.0
+                _eff   = trade_grader.adaptive_min_grade(
+                    consecutive_losses=_perf.consecutive_losses(),
+                    daily_loss_pct=_dpct,
+                    consecutive_wins=_perf.consecutive_wins(),
+                    weekly_pnl=_perf.weekly_pnl(_week),
+                )
+                _note  = "at base" if _eff == min_grade else f"tightened from `{min_grade}`"
+                lines.append(f"*Adaptive grade floor*: `{_eff}` ({_note})")
+            except Exception:
+                pass
 
         return "\n".join(lines)
     except Exception as exc:
