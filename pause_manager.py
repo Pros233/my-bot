@@ -52,7 +52,7 @@ def _default_state() -> dict:
         "daily_pnl_usdt": 0.0,
         "weekly_pnl_usdt": 0.0,
         "consecutive_losses": 0,
-        "balance": 10_000.0,
+        "balance": 0.0,  # stays 0 until update_balance() is called
     }
 
 
@@ -106,7 +106,7 @@ def _reset_weekly_if_new_week(now: datetime) -> bool:
 
 def _write_paused_file(reason: str, pause_until: Optional[datetime] = None) -> None:
     now = datetime.now(timezone.utc)
-    balance = _state.get("balance", 10_000.0)
+    balance = _state.get("balance", 0.0)
     daily_pct = _state["daily_pnl_usdt"] / balance if balance > 0 else 0.0
     weekly_pct = _state["weekly_pnl_usdt"] / balance if balance > 0 else 0.0
     data = {
@@ -187,9 +187,13 @@ def record_close(realized_pnl_usdt: float, close_type: str) -> None:
         if PAUSED_FILE.exists():
             return
 
-        balance = _state.get("balance", 10_000.0)
-        daily_pct = _state["daily_pnl_usdt"] / balance if balance > 0 else 0.0
-        weekly_pct = _state["weekly_pnl_usdt"] / balance if balance > 0 else 0.0
+        balance = _state.get("balance", 0.0)
+        if balance <= 0:
+            # Balance not yet reported — skip pct-based limit checks
+            _save_state()
+            return
+        daily_pct = _state["daily_pnl_usdt"] / balance
+        weekly_pct = _state["weekly_pnl_usdt"] / balance
         consec = _state["consecutive_losses"]
 
         reason: Optional[str] = None
@@ -343,7 +347,7 @@ def get_status() -> dict:
     _reset_daily_if_new_day(now)
     _reset_weekly_if_new_week(now)
 
-    balance = _state.get("balance", 10_000.0)
+    balance = _state.get("balance", 0.0)
     daily_pct = _state["daily_pnl_usdt"] / balance if balance > 0 else 0.0
     weekly_pct = _state["weekly_pnl_usdt"] / balance if balance > 0 else 0.0
     paused = PAUSED_FILE.exists()

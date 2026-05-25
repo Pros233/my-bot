@@ -235,7 +235,7 @@ def adaptive_min_grade(
 
     Config base: MIN_TRADE_GRADE (default "A")
     """
-    if not getattr(config, "ENABLE_ADAPTIVE_FILTERS", False):
+    if not getattr(config, "ENABLE_ADAPTIVE_GRADES", False):
         return getattr(config, "MIN_TRADE_GRADE", "A")
 
     base = getattr(config, "MIN_TRADE_GRADE", "A")

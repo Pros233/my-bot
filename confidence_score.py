@@ -71,11 +71,11 @@ def _regime_clarity_score(market_states: list) -> float:
 
         # States that are clear and tradeable → high score
         _CLARITY = {
-            "RANGING":               90.0,
-            "MEAN_REV_FAVORABLE":    85.0,
-            "WEAK_TREND":            70.0,
-            "STRONG_TREND":          65.0,
-            "MOMENTUM_EXPANSION":    60.0,
+            "RANGING":               85.0,
+            "STRONG_TREND":          85.0,   # clear direction — high clarity
+            "MEAN_REV_FAVORABLE":    80.0,
+            "MOMENTUM_EXPANSION":    75.0,
+            "WEAK_TREND":            65.0,
             "VOL_COMPRESSION":       55.0,
             "VOL_EXPANSION":         35.0,
             "LOW_LIQUIDITY":         25.0,

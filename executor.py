@@ -95,6 +95,8 @@ class ExecutionEngine:
         self.position: Optional[OpenPosition] = None
         self._shutdown_requested = False
 
+        self._symbol_filters: dict = {}  # cache: symbol -> {step_size, min_qty, min_notional}
+
         # Register clean-shutdown handlers
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -146,6 +148,60 @@ class ExecutionEngine:
             )
             self._cancel_all_orders()
 
+    def _get_symbol_filters(self, symbol: str) -> tuple:
+        """Return (step_size, min_qty, min_notional). Cached after first fetch."""
+        if symbol in self._symbol_filters:
+            f = self._symbol_filters[symbol]
+            return f["step_size"], f["min_qty"], f["min_notional"]
+
+        step_size = 0.00001
+        min_qty = 0.00001
+        min_notional = 5.0
+        try:
+            info = _with_retry(lambda: self.client.get_symbol_info(symbol))
+            if info:
+                for flt in info.get("filters", []):
+                    if flt["filterType"] == "LOT_SIZE":
+                        step_size = float(flt["stepSize"])
+                        min_qty   = float(flt["minQty"])
+                    elif flt["filterType"] in ("MIN_NOTIONAL", "NOTIONAL"):
+                        min_notional = float(flt.get("minNotional", min_notional))
+        except Exception as exc:
+            logger.log_warning(f"Could not fetch symbol filters for {symbol}: {exc}")
+
+        self._symbol_filters[symbol] = {
+            "step_size": step_size, "min_qty": min_qty, "min_notional": min_notional,
+        }
+        return step_size, min_qty, min_notional
+
+    def _adjust_qty(self, qty: float, entry_price: float) -> "Optional[float]":
+        """Round qty to Binance step size and validate min notional. Returns None if not viable."""
+        step_size, min_qty, min_notional = self._get_symbol_filters(self.symbol)
+
+        # Round DOWN to step size
+        if step_size > 0:
+            qty = math.floor(qty / step_size) * step_size
+            if step_size >= 1.0:
+                qty = float(int(qty))
+            else:
+                precision = max(0, round(-math.log10(step_size)))
+                qty = round(qty, precision)
+
+        if qty < min_qty:
+            msg = f"qty {qty} < min_qty {min_qty} for {self.symbol}"
+            logger.log_warning(f"PRE-FLIGHT SKIP | {msg}")
+            alerts.alert_order_failed(self.symbol, "PRE-FLIGHT", msg)
+            return None
+
+        notional = qty * entry_price
+        if notional < min_notional:
+            msg = f"notional ${notional:.2f} < min ${min_notional} (qty={qty} price={entry_price:.2f})"
+            logger.log_warning(f"PRE-FLIGHT SKIP | {msg}")
+            alerts.alert_order_failed(self.symbol, "PRE-FLIGHT", msg)
+            return None
+
+        return qty
+
     def execute_buy(
         self,
         params: TradeParams,
@@ -171,7 +227,9 @@ class ExecutionEngine:
             logger.log_warning("execute_buy called with an existing open position. Skipping.")
             return False
 
-        qty = params.position_size
+        qty = self._adjust_qty(params.position_size, params.entry_price)
+        if qty is None:
+            return False  # pre-flight failed — notional or lot size issue
 
         # 1. Place market buy
         try:
@@ -203,8 +261,18 @@ class ExecutionEngine:
 
             # 3a. Partial LIMIT sell at TP
             partial_tp_id = self._place_limit_sell(partial_qty, params.tp_price)
+            if partial_tp_id is None:
+                logger.log_warning(f"Partial TP placement failed for {self.symbol} — stop-only protection active")
+                alerts.alert_order_failed(self.symbol, "PARTIAL TP SELL", "placement failed — stop-only protection")
             # 3b. Full-size SL (protects entire position until partial TP fires)
             stop_id = self._place_stop_limit_sell(qty, params.stop_price)
+            if stop_id is None:
+                logger.log_error(f"Stop-loss placement failed for {self.symbol} — emergency market close")
+                alerts.alert_order_failed(self.symbol, "STOP LOSS", "placement failed — emergency market close")
+                if partial_tp_id:
+                    self._cancel_order_safe(partial_tp_id)
+                self._close_at_market(qty)
+                return False
 
             self.position = OpenPosition(
                 side="BUY",
@@ -223,9 +291,19 @@ class ExecutionEngine:
         else:
             # 3. Place full TP limit sell
             tp_id = self._place_limit_sell(qty, params.tp_price)
+            if tp_id is None:
+                logger.log_warning(f"TP placement failed for {self.symbol} — stop-only protection active")
+                alerts.alert_order_failed(self.symbol, "TP LIMIT SELL", "placement failed — stop-only protection")
 
             # 4. Place stop-loss limit sell
             stop_id = self._place_stop_limit_sell(qty, params.stop_price)
+            if stop_id is None:
+                logger.log_error(f"Stop-loss placement failed for {self.symbol} — emergency market close")
+                alerts.alert_order_failed(self.symbol, "STOP LOSS", "placement failed — emergency market close")
+                if tp_id:
+                    self._cancel_order_safe(tp_id)
+                self._close_at_market(qty)
+                return False
 
             # 5. Record position
             self.position = OpenPosition(

@@ -735,7 +735,7 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                 f"{now_utc.isocalendar()[0]}-W{now_utc.isocalendar()[1]:02d}"
                             ),
                         )
-                        _skip_trade = not trade_grader.grade_passes_minimum(_grade)
+                        _skip_trade = trade_grader.grade_rank(_grade) > trade_grader.grade_rank(_eff_min_grade)
                         if _skip_trade:
                             logger.log_info(
                                 f"SKIP | {best.symbol} | grade={_grade} "
