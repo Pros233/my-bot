@@ -920,12 +920,18 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                     _grade, _cycle_confidence
                                 )
                                 _ep_rank = {"A+": 0, "A": 1, "B": 2, "C": 3}
-                                if _ep_rank.get(_grade, 4) > _ep_rank.get(_conf_min_grade, 0):
+                                if _ep_rank.get(_grade, 4) > _ep_rank.get(_conf_min_grade, 0) and not _boost_override:
                                     _skip_trade = True
                                     logger.log_info(
                                         f"CONFIDENCE_GRADE | {best.symbol} | "
                                         f"score={_cycle_confidence:.0f} CAUTIOUS requires "
                                         f"grade≥{_conf_min_grade} but got {_grade}"
+                                    )
+                                elif _ep_rank.get(_grade, 4) > _ep_rank.get(_conf_min_grade, 0) and _boost_override:
+                                    logger.log_info(
+                                        f"CONFIDENCE_GRADE_BYPASSED | {best.symbol} | "
+                                        f"score={_cycle_confidence:.0f} CAUTIOUS would require "
+                                        f"grade≥{_conf_min_grade} but boost override active — allowing"
                                     )
                         except Exception as _cse_exc:
                             logger.log_warning(f"confidence grade check error: {_cse_exc}")
