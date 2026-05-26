@@ -929,9 +929,9 @@ def live(client: Client, data_client: Client | None = None) -> None:
                                     )
                                 elif _ep_rank.get(_grade, 4) > _ep_rank.get(_conf_min_grade, 0) and _boost_override:
                                     logger.log_info(
-                                        f"CONFIDENCE_GRADE_BYPASSED | {best.symbol} | "
-                                        f"score={_cycle_confidence:.0f} CAUTIOUS would require "
-                                        f"grade≥{_conf_min_grade} but boost override active — allowing"
+                                        f"CONFIDENCE_GRADE_BYPASSED_BY_BOOST | {best.symbol} | "
+                                        f"grade={_grade} | conf_floor={_conf_min_grade} | "
+                                        f"confidence={_cycle_confidence:.0f}"
                                     )
                         except Exception as _cse_exc:
                             logger.log_warning(f"confidence grade check error: {_cse_exc}")
