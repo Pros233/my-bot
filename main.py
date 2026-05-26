@@ -396,6 +396,7 @@ def live(client: Client, data_client: Client | None = None) -> None:
     _last_confidence_state: str = ""         # for state-change Telegram alerts
     _last_intel_summary_ts: float = 0.0     # hourly intel: funding arb + social trending
     _last_funding_alert_ts: float = 0.0     # dedup funding arb extreme alerts
+    _last_15m_scan_ts: float = 0.0          # cooldown for 15m candidate scan
 
     def _cycle_timeout(_signum, _frame):
         raise TimeoutError("Candle cycle timed out (network stall)")
@@ -1224,6 +1225,197 @@ def live(client: Client, data_client: Client | None = None) -> None:
                         )
                     except Exception as _fb_rec_exc:
                         logger.log_warning(f"frequency_boost record error: {_fb_rec_exc}")
+
+                # ── 15m candidate scan fallback ───────────────────────────────
+                # Only fires when 1H found no executable trade AND the feature
+                # is enabled. All 1H risk gates are re-checked in confirmation.
+                if (
+                    getattr(config, "ENABLE_15M_CANDIDATE_SCAN", False)
+                    and not _ra_executed_sym
+                ):
+                    try:
+                        import candidate_scanner_15m as _c15
+                        import candidate_confirmation as _cc
+
+                        _15m_cooldown_mins = int(getattr(config, "SCAN_15M_COOLDOWN_MINUTES", 14))
+                        _15m_elapsed_mins  = (time.monotonic() - _last_15m_scan_ts) / 60.0
+
+                        if _15m_elapsed_mins < _15m_cooldown_mins:
+                            logger.log_info(
+                                f"SCAN_15M_COOLDOWN | {_15m_elapsed_mins:.1f}m elapsed "
+                                f"< {_15m_cooldown_mins}m — skipping"
+                            )
+                        else:
+                            # Determine symbol set: override or fall back to main list
+                            _raw_15m_syms = getattr(config, "SCAN_15M_SYMBOLS", "")
+                            _15m_syms = (
+                                [s.strip() for s in _raw_15m_syms.split(",") if s.strip()]
+                                if _raw_15m_syms.strip()
+                                else list(symbols)
+                            )
+                            # Only scan symbols with no open position
+                            _15m_syms = [
+                                s for s in _15m_syms
+                                if s in engines and not engines[s].has_open_position()
+                            ]
+
+                            if not _15m_syms:
+                                logger.log_info(
+                                    "SCAN_15M | no eligible symbols (all have open positions)"
+                                )
+                            else:
+                                logger.log_info(
+                                    f"SCAN_15M | scanning {len(_15m_syms)} symbol(s): "
+                                    f"{', '.join(_15m_syms)}"
+                                )
+                                _15m_candidates = _c15.scan_15m_candidates(
+                                    client, data_client, _15m_syms, now_utc
+                                )
+                                _last_15m_scan_ts = time.monotonic()
+
+                                _min_rank  = float(getattr(config, "SCAN_15M_MIN_RANK_SCORE", 55.0))
+                                _max_cands = int(getattr(config, "SCAN_15M_MAX_CANDIDATES", 3))
+                                _qualified = [
+                                    c for c in _15m_candidates if c.rank_score >= _min_rank
+                                ]
+
+                                logger.log_info(
+                                    f"SCAN_15M | found={len(_15m_candidates)} "
+                                    f"qualified(rank>={_min_rank:.0f})={len(_qualified)}"
+                                )
+
+                                _15m_executed = False
+                                for _cand in _qualified[:_max_cands]:
+                                    if _15m_executed:
+                                        break
+
+                                    _conf_result = _cc.confirm_15m_candidate(
+                                        candidate=_cand,
+                                        market_states=results,
+                                        balance=balance,
+                                        open_count=open_count,
+                                        confidence_score=_cycle_confidence,
+                                        client=client,
+                                        now_utc=now_utc,
+                                    )
+
+                                    if not _conf_result.confirmed:
+                                        logger.log_info(
+                                            f"SCAN_15M_REJECTED | {_cand.symbol} | "
+                                            f"gate={_conf_result.blocking_gate} | "
+                                            f"reason={_conf_result.reason}"
+                                        )
+                                        continue
+
+                                    # Build TradeParams from candidate references
+                                    _15m_entry  = float(_cand.entry_reference)
+                                    _15m_stop   = float(_cand.stop_reference)
+                                    _15m_tp     = float(_cand.tp_reference)
+                                    _15m_stop_d = abs(_15m_entry - _15m_stop)
+                                    if _15m_stop_d < 1e-8:
+                                        logger.log_warning(
+                                            f"SCAN_15M | {_cand.symbol} stop_distance≈0 — skipping"
+                                        )
+                                        continue
+
+                                    _15m_scale = (
+                                        confidence_score.risk_scale_factor(_cycle_confidence)
+                                        if getattr(config, "ENABLE_CONFIDENCE_SCORE", False) else 1.0
+                                    )
+                                    _15m_qty = round(
+                                        min(
+                                            balance * config.RISK_PER_TRADE / _15m_stop_d,
+                                            balance * config.MAX_POSITION_PCT / _15m_entry,
+                                        ) * _15m_scale,
+                                        5,
+                                    )
+                                    _15m_params = risk.TradeParams(
+                                        entry_price=_15m_entry,
+                                        effective_entry=_15m_entry,
+                                        stop_price=_15m_stop,
+                                        tp_price=_15m_tp,
+                                        stop_distance=_15m_stop_d,
+                                        position_size=_15m_qty,
+                                        risk_amount=round(balance * config.RISK_PER_TRADE, 4),
+                                        fee_estimate=0.0,
+                                        halved=False,
+                                    )
+                                    logger.log_info(
+                                        f"SCAN_15M_EXECUTE | {_cand.symbol} | "
+                                        f"setup={_cand.setup_name} | grade={_cand.grade_estimate} | "
+                                        f"entry={_15m_entry:.4f} SL={_15m_stop:.4f} "
+                                        f"TP={_15m_tp:.4f} | "
+                                        f"conf_score={_conf_result.confirmation_score:.0f}"
+                                    )
+
+                                    _15m_sym_state = results.get(_cand.symbol)
+                                    _15m_success = engines[_cand.symbol].execute_buy(
+                                        _15m_params,
+                                        strategy=f"15M_{_cand.setup_name}",
+                                        regime=str(getattr(_15m_sym_state, "trend", "")),
+                                        adx=float(getattr(_15m_sym_state, "adx", 0.0)),
+                                        atr_pct=float(_cand.atr_pct),
+                                        score_pct=float(_cand.rank_score / 100.0),
+                                        balance=balance,
+                                    )
+
+                                    if _15m_success:
+                                        _ra_executed_sym = _cand.symbol
+                                        _15m_executed    = True
+                                        _c15.record_scan(
+                                            candidates=_15m_candidates,
+                                            confirmed=1,
+                                            rejected=len(_15m_candidates) - 1,
+                                            symbols_scanned=len(_15m_syms),
+                                            executed_symbol=_cand.symbol,
+                                        )
+                                        logger.log_info(
+                                            f"SCAN_15M_EXECUTED | {_cand.symbol} | "
+                                            f"setup={_cand.setup_name} | "
+                                            f"grade={_cand.grade_estimate}"
+                                        )
+                                        if getattr(config, "ENABLE_TELEGRAM_BOT", False):
+                                            try:
+                                                _pos15 = engines[_cand.symbol].position
+                                                if _pos15:
+                                                    from telegram_charts import generate_trade_chart
+                                                    _chart15 = generate_trade_chart(
+                                                        _cand.symbol, client,
+                                                        _pos15.fill_price,
+                                                        _pos15.stop_price,
+                                                        _pos15.tp_price,
+                                                    )
+                                                    if _chart15:
+                                                        telegram_bot.send_photo(
+                                                            _chart15,
+                                                            caption=(
+                                                                f"*{_cand.symbol}* "
+                                                                f"15M [{_cand.setup_name}] "
+                                                                f"[{_cand.grade_estimate}] "
+                                                                f"@ `${_pos15.fill_price:,.2f}`"
+                                                            ),
+                                                        )
+                                            except Exception as _tg15_exc:
+                                                logger.log_warning(
+                                                    f"TG 15m chart failed: {_tg15_exc}"
+                                                )
+                                    else:
+                                        logger.log_warning(
+                                            f"SCAN_15M | {_cand.symbol} execute_buy failed"
+                                        )
+
+                                if not _15m_executed and _qualified:
+                                    _c15.record_scan(
+                                        candidates=_15m_candidates,
+                                        confirmed=0,
+                                        rejected=len(_15m_candidates),
+                                        symbols_scanned=len(_15m_syms),
+                                    )
+
+                    except Exception as _15m_exc:
+                        logger.log_warning(
+                            f"15m candidate scan error (non-critical): {_15m_exc}"
+                        )
 
                 # ── Dashboard for each symbol ─────────────────────────────────
                 for sym, r in results.items():

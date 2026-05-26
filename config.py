@@ -406,6 +406,24 @@ FREQUENCY_BOOST_MAX_SPREAD_BPS: float = _float("FREQUENCY_BOOST_MAX_SPREAD_BPS",
 # Comma-separated symbol allowlist; empty string = all configured symbols
 FREQUENCY_BOOST_SYMBOLS: str = os.getenv("FREQUENCY_BOOST_SYMBOLS", "")
 
+# ── 15-minute candidate scanning ─────────────────────────────────────────────
+# Supplementary scan that runs when the 1H loop finds no executable trade.
+# All 1H risk controls (pause, MAX_OPEN_TRADES, confidence, market avoidance,
+# spread, exchange filters) remain fully enforced. Default: OFF.
+ENABLE_15M_CANDIDATE_SCAN: bool = _bool("ENABLE_15M_CANDIDATE_SCAN", False)
+# Comma-separated symbol allowlist for 15m scanning; empty = use main SYMBOLS list
+SCAN_15M_SYMBOLS: str = os.getenv("SCAN_15M_SYMBOLS", "")
+# Minimum rank_score a 15m candidate must achieve to enter confirmation (0-100)
+SCAN_15M_MIN_RANK_SCORE: float = _float("SCAN_15M_MIN_RANK_SCORE", 55.0)
+# Minimum confirmation_score from candidate_confirmation to proceed to execution
+SCAN_15M_MIN_CONFIRMATION_SCORE: float = _float("SCAN_15M_MIN_CONFIRMATION_SCORE", 55.0)
+# Number of 15m candles to fetch per symbol
+SCAN_15M_CANDLES: int = _int("SCAN_15M_CANDLES", 100)
+# Max candidates to confirm per cycle (avoids waterfall of API calls)
+SCAN_15M_MAX_CANDIDATES: int = _int("SCAN_15M_MAX_CANDIDATES", 3)
+# Minimum minutes since last 15m scan (prevents spamming if 1H loop runs fast)
+SCAN_15M_COOLDOWN_MINUTES: int = _int("SCAN_15M_COOLDOWN_MINUTES", 14)
+
 # ── ML scoring ────────────────────────────────────────────────────────────────
 ENABLE_ML_SCORING: bool = _bool("ENABLE_ML_SCORING", False)
 

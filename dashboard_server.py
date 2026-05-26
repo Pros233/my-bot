@@ -2661,6 +2661,34 @@ def api_events():
     )
 
 
+@app.route("/api/scan15_status")
+@login_required
+def api_scan15_status():
+    def _build():
+        try:
+            import candidate_scanner_15m as _c15
+            stats   = _c15.get_stats()
+            enabled = getattr(config, "ENABLE_15M_CANDIDATE_SCAN", False)
+            raw_syms = getattr(config, "SCAN_15M_SYMBOLS", "")
+            syms = (
+                [s.strip() for s in raw_syms.split(",") if s.strip()]
+                if raw_syms.strip()
+                else list(config.SYMBOLS)
+            )
+            return {
+                "enabled":                  enabled,
+                "symbols":                  syms,
+                "min_rank_score":           getattr(config, "SCAN_15M_MIN_RANK_SCORE", 55.0),
+                "min_confirmation_score":   getattr(config, "SCAN_15M_MIN_CONFIRMATION_SCORE", 55.0),
+                "cooldown_minutes":         getattr(config, "SCAN_15M_COOLDOWN_MINUTES", 14),
+                "max_candidates":           getattr(config, "SCAN_15M_MAX_CANDIDATES", 3),
+                "stats":                    stats,
+            }
+        except Exception as exc:
+            return {"error": str(exc)}
+    return jsonify(_cached("scan15_status", _build, 30.0) or {})
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # NO TRADING ENDPOINTS BELOW.  Zero order_market_buy / order_market_sell /
 # create_order / cancel_order calls exist anywhere in this file.

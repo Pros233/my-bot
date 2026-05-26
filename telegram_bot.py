@@ -686,6 +686,12 @@ def _handle_command(cmd: str, args: list) -> None:
     elif cmd == "boost_off":
         _send_text(tc.cmd_boost_off())
 
+    elif cmd == "scan15_status":
+        _send_text(tc.cmd_scan15_status())
+
+    elif cmd == "scan15":
+        _send_text(tc.cmd_scan15(_client))
+
     elif cmd == "help":
         _send_text(tc.cmd_help())
 

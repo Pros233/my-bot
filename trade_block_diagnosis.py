@@ -3,6 +3,7 @@ trade_block_diagnosis.py — Diagnose why trades are being blocked.
 
 Run on VPS:
     cd /opt/btcbot && .venv/bin/python trade_block_diagnosis.py
+    cd /opt/btcbot && .venv/bin/python trade_block_diagnosis.py --scan15-preview
 
 Shows:
   - Adaptive grade effective floor
@@ -10,6 +11,11 @@ Shows:
   - Recent TP/SL placement failures
   - Recent min-notional / lot-size skips
   - Recent adaptive grade tightenings
+
+With --scan15-preview:
+  - 15m scanner config and stats
+  - Live 15m candidate scan results (read-only, no execution)
+  - Confirmation gate preview for each candidate
 """
 from __future__ import annotations
 
@@ -180,7 +186,105 @@ def _check_adaptive_tightenings() -> None:
     ])
 
 
+def _check_scan15_preview() -> None:
+    _section("6. 15M CANDIDATE SCANNER PREVIEW (read-only)")
+    try:
+        import config as _cfg
+        import candidate_scanner_15m as _c15
+        import candidate_confirmation as _cc
+        from binance.client import Client
+
+        enabled = getattr(_cfg, "ENABLE_15M_CANDIDATE_SCAN", False)
+        print(f"  ENABLE_15M_CANDIDATE_SCAN : {enabled}")
+        print(f"  Min rank score            : {getattr(_cfg, 'SCAN_15M_MIN_RANK_SCORE', 55.0):.0f}")
+        print(f"  Min confirm score         : {getattr(_cfg, 'SCAN_15M_MIN_CONFIRMATION_SCORE', 55.0):.0f}")
+        print(f"  Cooldown (minutes)        : {getattr(_cfg, 'SCAN_15M_COOLDOWN_MINUTES', 14)}")
+
+        stats = _c15.get_stats()
+        print(f"\n  Stats — total_scans={stats.get('total_scans',0)} "
+              f"candidates={stats.get('total_candidates',0)} "
+              f"executed={stats.get('total_executed',0)}")
+
+        if not enabled:
+            print("\n  Scanner is disabled — set ENABLE_15M_CANDIDATE_SCAN=true to use.")
+            return
+
+        raw_syms = getattr(_cfg, "SCAN_15M_SYMBOLS", "")
+        syms = (
+            [s.strip() for s in raw_syms.split(",") if s.strip()]
+            if raw_syms.strip()
+            else list(_cfg.SYMBOLS)
+        )
+        print(f"\n  Symbols to scan: {', '.join(syms)}")
+
+        try:
+            client = Client(_cfg.BINANCE_API_KEY, _cfg.BINANCE_SECRET_KEY)
+        except Exception as e:
+            print(f"  Cannot connect to Binance: {e}")
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        print(f"  Running scan at {now_utc.strftime('%H:%M UTC')} …")
+
+        candidates = _c15.scan_15m_candidates(client, None, syms, now_utc)
+        if not candidates:
+            print("  No candidates found.")
+            return
+
+        print(f"\n  {'Symbol':<12} {'Setup':<30} {'Rank':>5} {'Grade':>6} "
+              f"{'RSI':>5} {'ADX':>5} {'Vol':>5}")
+        print(f"  {'-'*80}")
+        for c in candidates:
+            print(f"  {c.symbol:<12} {c.setup_name:<30} {c.rank_score:>5.0f} "
+                  f"{c.grade_estimate:>6} {c.rsi:>5.0f} {c.adx:>5.0f} "
+                  f"{c.volume_ratio:>5.1f}x")
+
+        min_rank = float(getattr(_cfg, "SCAN_15M_MIN_RANK_SCORE", 55.0))
+        qualified = [c for c in candidates if c.rank_score >= min_rank]
+        if not qualified:
+            print(f"\n  No candidates above rank threshold {min_rank:.0f}.")
+            return
+
+        # Get balance for confirmation preview
+        try:
+            account = client.get_account()
+            bal = next(
+                (float(a["free"]) for a in account["balances"] if a["asset"] == "USDT"),
+                100.0,
+            )
+        except Exception:
+            bal = 100.0
+
+        print(f"\n  Confirmation gate preview (balance=${bal:.2f}, open_count=0):")
+        print(f"  {'Symbol':<12} {'Gate':<25} {'Score':>5} {'Result'}")
+        print(f"  {'-'*70}")
+        for c in qualified:
+            res = _cc.confirm_15m_candidate(
+                candidate=c,
+                market_states={},
+                balance=bal,
+                open_count=0,
+                confidence_score=65.0,   # assume CAUTIOUS for conservative preview
+                client=client,
+                now_utc=now_utc,
+            )
+            flag   = "PASS" if res.confirmed else "BLOCK"
+            detail = res.blocking_gate if not res.confirmed else "all gates ok"
+            print(f"  {c.symbol:<12} {detail:<25} {res.confirmation_score:>5.0f}  {flag}")
+
+    except Exception as exc:
+        print(f"  ERROR: {exc}")
+
+
 def main() -> None:
+    import argparse as _ap
+    parser = _ap.ArgumentParser(description="Trade block diagnosis")
+    parser.add_argument(
+        "--scan15-preview", action="store_true",
+        help="Add 15m scanner config, live scan results, and confirmation preview",
+    )
+    args = parser.parse_args()
+
     print()
     print("trade_block_diagnosis.py")
     print(f"Run at: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
@@ -190,6 +294,9 @@ def main() -> None:
     _check_tp_sl_failures()
     _check_notional_skips()
     _check_adaptive_tightenings()
+
+    if args.scan15_preview:
+        _check_scan15_preview()
 
     print()
     print("=" * 60)

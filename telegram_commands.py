@@ -1539,6 +1539,10 @@ def cmd_help() -> str:
         "/boost_on — Activate frequency boost (allows B/C-grade trades safely)\n"
         "/boost_off — Deactivate frequency boost immediately\n"
         "\n"
+        "*15m Candidate Scanner*\n"
+        "/scan15_status — Scanner config, stats, and last candidates\n"
+        "/scan15 — Run an on-demand 15m scan now\n"
+        "\n"
         "_All commands restricted to authorised chat ID only._"
     )
 
@@ -1926,3 +1930,103 @@ def cmd_boost_off() -> str:
     except Exception as exc:
         logger.log_warning(f"cmd_boost_off error: {exc}")
         return f"*Boost OFF*: error — `{exc}`"
+
+
+def cmd_scan15_status() -> str:
+    """Return a summary of the 15m candidate scanner state and recent stats."""
+    try:
+        import config as _cfg
+        import candidate_scanner_15m as _c15
+
+        enabled = getattr(_cfg, "ENABLE_15M_CANDIDATE_SCAN", False)
+        stats   = _c15.get_stats()
+
+        raw_syms = getattr(_cfg, "SCAN_15M_SYMBOLS", "")
+        sym_list = (
+            [s.strip() for s in raw_syms.split(",") if s.strip()]
+            if raw_syms.strip()
+            else ["(uses main SYMBOLS list)"]
+        )
+
+        lines = [
+            "*15m Candidate Scanner*",
+            f"Enabled: `{'YES' if enabled else 'NO'}`",
+            f"Symbols: `{', '.join(sym_list)}`",
+            f"Min rank score: `{getattr(_cfg, 'SCAN_15M_MIN_RANK_SCORE', 55.0):.0f}`",
+            f"Min confirm score: `{getattr(_cfg, 'SCAN_15M_MIN_CONFIRMATION_SCORE', 55.0):.0f}`",
+            f"Cooldown: `{getattr(_cfg, 'SCAN_15M_COOLDOWN_MINUTES', 14)} min`",
+            "",
+            "*Stats (all-time)*",
+            f"Total scans:       `{stats.get('total_scans', 0)}`",
+            f"Candidates found:  `{stats.get('total_candidates', 0)}`",
+            f"Confirmed:         `{stats.get('total_confirmed', 0)}`",
+            f"Executed:          `{stats.get('total_executed', 0)}`",
+        ]
+
+        last_cands = stats.get("last_candidates", [])
+        if last_cands:
+            lines.append("")
+            lines.append("*Last scan candidates*")
+            for c in last_cands[:5]:
+                lines.append(
+                    f"  `{c.get('symbol','?')}` {c.get('setup_name','?')} "
+                    f"rank={c.get('rank_score', 0):.0f} "
+                    f"grade={c.get('grade_estimate','?')}"
+                )
+
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.log_warning(f"cmd_scan15_status error: {exc}")
+        return f"*15m Scanner*: error — `{exc}`"
+
+
+def cmd_scan15(client) -> str:
+    """Trigger an immediate 15m candidate scan and return results."""
+    try:
+        import config as _cfg
+        import candidate_scanner_15m as _c15
+        from datetime import datetime, timezone
+
+        if not getattr(_cfg, "ENABLE_15M_CANDIDATE_SCAN", False):
+            return (
+                "*15m Scanner* — feature disabled.\n"
+                "Set `ENABLE_15M_CANDIDATE_SCAN=true` in .env to enable."
+            )
+
+        raw_syms = getattr(_cfg, "SCAN_15M_SYMBOLS", "")
+        syms = (
+            [s.strip() for s in raw_syms.split(",") if s.strip()]
+            if raw_syms.strip()
+            else list(_cfg.SYMBOLS)
+        )
+
+        now_utc = datetime.now(timezone.utc)
+        candidates = _c15.scan_15m_candidates(client, None, syms, now_utc)
+
+        if not candidates:
+            return (
+                f"*15m Scanner* — scanned `{len(syms)}` symbol(s)\n"
+                f"No candidates found."
+            )
+
+        min_rank = float(getattr(_cfg, "SCAN_15M_MIN_RANK_SCORE", 55.0))
+        qualified = [c for c in candidates if c.rank_score >= min_rank]
+
+        lines = [
+            f"*15m Scanner* — scanned `{len(syms)}` symbol(s)",
+            f"Found `{len(candidates)}` candidate(s), "
+            f"`{len(qualified)}` above rank threshold `{min_rank:.0f}`",
+            "",
+        ]
+        for c in candidates[:8]:
+            flag = "✓" if c.rank_score >= min_rank else "–"
+            lines.append(
+                f"{flag} `{c.symbol}` {c.setup_name} "
+                f"rank=`{c.rank_score:.0f}` grade=`{c.grade_estimate}` "
+                f"RSI={c.rsi:.0f} ADX={c.adx:.0f} vol={c.volume_ratio:.1f}x"
+            )
+
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.log_warning(f"cmd_scan15 error: {exc}")
+        return f"*15m Scanner*: error — `{exc}`"
