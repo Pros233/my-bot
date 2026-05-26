@@ -681,6 +681,11 @@ def live(client: Client, data_client: Client | None = None) -> None:
                 _ra_skip: bool = False
                 _ra_filter_hits: list = []
                 _ra_executed_sym: str = ""
+                # Frequency boost state — must be initialized before any branch so
+                # the post-execution accounting block at the bottom of the cycle
+                # never sees an UnboundLocalError regardless of which path was taken.
+                _boost_override: bool = False
+                _boost_result = None
 
                 if open_count >= config.MAX_OPEN_TRADES:
                     for r in candidates:
@@ -708,7 +713,11 @@ def live(client: Client, data_client: Client | None = None) -> None:
                     )
 
                     engine = engines[best.symbol]
-                    _boost_override = False  # set True if frequency boost allows a grade-skip
+                    # _boost_override already initialised to False above (before candidate
+                    # branching) — log current state so every cycle is auditable.
+                    logger.log_info(
+                        f"BOOST_STATE | symbol={best.symbol} | override=false | checked=false"
+                    )
 
                     # ── Trade quality filters + grader ────────────────────────
                     try:
